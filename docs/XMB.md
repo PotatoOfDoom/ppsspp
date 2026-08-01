@@ -45,21 +45,22 @@ VSH requires files you supply yourself, from a PSP you own or from an official S
      data/cert/
    ```
 
-3. Point PPSSPP at it. The `flash0` directory defaults to `assets/flash0` next to the executable
-   (it normally only holds the bundled fonts), and can be changed in the config as
-   `flash0Directory`. Alternatively, just boot any `vshmain.prx` directly — the directory three
-   levels above it is mounted as `flash0:`, so a dump can live anywhere.
-
-4. Boot it, either way:
+3. Boot it by opening the `vshmain.prx` from your tree like any other file:
 
    ```
-   PPSSPPSDL --vsh
-   PPSSPPHeadless --vsh --log=vsh.log
+   PPSSPPSDL       <tree>/vsh/module/vshmain.prx
+   PPSSPPHeadless  <tree>/vsh/module/vshmain.prx -l --log=vsh.log
    ```
 
-   or open the `vshmain.prx` from the dump like any other file. Files named `vshmain.prx` are
-   identified as `IdentifiedFileType::PSP_VSH` and get the VSH boot path rather than the homebrew
-   ELF path.
+   Files named `vshmain.prx` are identified as `IdentifiedFileType::PSP_VSH` and get the VSH boot
+   path rather than the homebrew ELF path. **A tree can live anywhere** — the directory three levels
+   above `vshmain.prx` is mounted as `flash0:`, and a `flash1` next to it as `flash1:`.
+
+   The `--vsh` flag exists too, but it is only useful if your dump happens to be in the built-in
+   `flash0` directory. That is `assets/flash0` next to the executable on desktop (where the bundled
+   fonts live) and platform-specific elsewhere; `g_Config.flash0Directory` is set at startup per
+   platform and is **not** a persisted config setting, so it can't be pointed somewhere else without
+   a code change.
 
 Use `--log=` and read the log — that's where all the interesting information is right now.
 
@@ -73,10 +74,11 @@ re-initializes the kernel, and with it the mount table, after the loader has run
   just the fonts in it (and on non-Windows/Apple builds it can't even list directories), so it's
   replaced with a real `DirectoryFileSystem` over the dump. This matters because the VSH loads all
   its siblings by absolute `flash0:` path, not relative to itself.
-- **Mounts `flash1:`, `flash2:` and `flash3:`** as writable directories under
-  `<system>/flash/`, created on demand. `flash1:` is where the real VSH keeps the registry and the
-  settings it writes back. These mounts are only added when booting the VSH, so games see exactly
-  the mount list they always have.
+- **Mounts `flash1:`, `flash2:` and `flash3:`.** `flash1:` is where the real VSH keeps the registry
+  and the settings it writes back. Each is taken from a sibling of the flash0 root if one exists —
+  which is where `Tools/extract_flash0.py` puts the `flash1` it extracts — otherwise from a writable
+  directory under `<system>/flash/`, created on demand. These mounts are only added when booting the
+  VSH, so games see exactly the mount list they always have.
 - **Sets the working directory** to `flash0:/vsh/module`.
 - **Pins a stable disc ID** (`PSPVSH000`) and title, since there's no `PARAM.SFO`. Without this a
   fake ID gets generated from the filename, which would make savestates and per-game config drift.

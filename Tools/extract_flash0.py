@@ -10,8 +10,13 @@
 """Prepares a flash0 tree that PPSSPP can boot the XMB (the VSH) from.
 
 Takes an official Sony PSP firmware update - an EBOOT.PBP, or the DATA.PSAR out
-of one - and produces the directory layout that `PPSSPPSDL --vsh` expects, then
+of one - and produces the directory layout PPSSPP's VSH boot path expects, then
 tells you whether the result will actually boot. See docs/XMB.md.
+
+The tree can live anywhere: PPSSPP mounts the directory three levels above
+vshmain.prx as flash0:, and a flash1 next to it as flash1:. So boot it by opening
+vshmain.prx. (The --vsh flag is not the way to use this - it only looks in the
+built-in flash0 directory, which lives inside the installation.)
 
 This is a driver, not a self-contained extractor. The PSAR inside an update is
 encrypted, and its contents are compressed with Sony's in-house KL4E/KL3E/2RLZ,
@@ -28,8 +33,8 @@ whether they came out in a state it can load.
 No firmware is downloaded or included. Supply your own update file.
 
 Usage:
-    extract_flash0.py EBOOT.PBP                      # install into the default flash0 dir
     extract_flash0.py EBOOT.PBP -o /path/to/flash0
+    extract_flash0.py EBOOT.PBP                      # installs into ./flash0
     extract_flash0.py --check /path/to/flash0        # just validate an existing tree
     extract_flash0.py --info EBOOT.PBP              # just describe the input
 """
@@ -259,22 +264,14 @@ def check(flash0dir):
     return ok
 
 
-def default_flash0_dir():
-    """Where PPSSPP looks for flash0 by default on this platform, best effort."""
-    if sys.platform == "darwin":
-        return os.path.expanduser("~/Library/Application Support/PPSSPP/flash0")
-    if sys.platform.startswith("win"):
-        return os.path.join(os.environ.get("APPDATA", ""), "PPSSPP", "flash0")
-    return os.path.expanduser("~/.config/ppsspp/PSP/SYSTEM/flash0")
-
-
 def main():
     ap = argparse.ArgumentParser(
         description="Prepare a flash0 tree for PPSSPP's VSH/XMB boot from a PSP firmware update.",
         epilog="See docs/XMB.md. No firmware is downloaded or included; supply your own update file.")
     ap.add_argument("input", nargs="?", help="an official EBOOT.PBP firmware update, or its DATA.PSAR")
-    ap.add_argument("-o", "--outdir", help=f"flash0 directory to install into (default: {default_flash0_dir()})")
-    ap.add_argument("--flash1", help="flash1 directory to install into (default: alongside flash0)")
+    ap.add_argument("-o", "--outdir", default="flash0",
+                    help="flash0 directory to install into (default: ./flash0)")
+    ap.add_argument("--flash1", help="flash1 directory to install into (default: flash1 beside flash0)")
     ap.add_argument("--check", metavar="FLASH0DIR", help="only validate an existing flash0 tree")
     ap.add_argument("--info", action="store_true", help="only describe the input file")
     ap.add_argument("--pspdecrypt", default="pspdecrypt", help="path to the pspdecrypt binary")
@@ -301,9 +298,10 @@ def main():
              "         git clone https://github.com/John-K/pspdecrypt && cd pspdecrypt && make\n"
              "       Then re-run with --pspdecrypt=/path/to/pspdecrypt (or put it on your PATH).")
 
-    flash0dir = os.path.abspath(args.outdir or default_flash0_dir())
+    flash0dir = os.path.abspath(args.outdir)
+    # MountVSHFlash prefers a flash1 sitting next to the flash0 root, so put it there.
     flash1dir = os.path.abspath(args.flash1) if args.flash1 else \
-        os.path.join(os.path.dirname(flash0dir), "flash", "flash1")
+        os.path.join(os.path.dirname(flash0dir), "flash1")
 
     tmp = tempfile.mkdtemp(prefix="ppsspp-flash0-")
     try:
@@ -318,8 +316,12 @@ def main():
 
     ok = check(flash0dir)
     if ok:
-        print(f"\nTry it:  PPSSPPSDL --vsh          (with flash0Directory = {flash0dir})")
-        print(f"     or:  PPSSPPSDL {os.path.join(flash0dir, 'vsh', 'module', 'vshmain.prx')}")
+        boot = os.path.join(flash0dir, "vsh", "module", "vshmain.prx")
+        print(f"\nBoot it with:  PPSSPPSDL {boot}")
+        print("A tree can live anywhere - PPSSPP mounts the directory three levels above")
+        print("vshmain.prx as flash0:, and picks up the flash1 beside it.")
+        print("(--vsh only looks in the built-in flash0 directory, which is inside the")
+        print("installation, so it won't find this one.)")
     sys.exit(0 if ok else 1)
 
 

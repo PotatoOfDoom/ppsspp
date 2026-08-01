@@ -471,12 +471,20 @@ void MountVSHFlash() {
 
 	// flash1: holds the registry and the settings the VSH writes back; flash2: and flash3: hold
 	// activation data and are normally empty. The real VSH expects all of these to exist.
+	//
+	// An update extracted by Tools/extract_flash0.py puts flash1 next to flash0, so prefer a
+	// sibling of the dump when there is one - otherwise use a writable directory of our own. Note
+	// these are only mounted when booting the VSH, so games see the mount list they always have.
 	for (const char *dev : { "flash1", "flash2", "flash3" }) {
-		const Path dir = GetSysDirectory(DIRECTORY_SYSTEM) / "flash" / dev;
-		if (!File::Exists(dir) && !File::CreateFullPath(dir)) {
-			ERROR_LOG(Log::Loader, "VSH: failed to create '%s' for %s:", dir.c_str(), dev);
-			continue;
+		Path dir = flash0Root.NavigateUp() / dev;
+		if (!File::IsDirectory(dir)) {
+			dir = GetSysDirectory(DIRECTORY_SYSTEM) / "flash" / dev;
+			if (!File::Exists(dir) && !File::CreateFullPath(dir)) {
+				ERROR_LOG(Log::Loader, "VSH: failed to create '%s' for %s:", dir.c_str(), dev);
+				continue;
+			}
 		}
+		INFO_LOG(Log::Loader, "VSH: mounted '%s' as %s:", dir.c_str(), dev);
 		pspFileSystem.Mount(std::string(dev) + ":", std::make_shared<DirectoryFileSystem>(&pspFileSystem, dir, FileSystemFlags::FLASH));
 	}
 }
