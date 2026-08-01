@@ -1928,7 +1928,7 @@ int __KernelCreateThread(const char *threadName, SceUID moduleID, u32 entry, u32
 int sceKernelCreateThread(const char *threadName, u32 entry, u32 prio, int stacksize, u32 attr, u32 optionAddr) {
 	PSPThread *cur = __GetCurrentThread();
 	SceUID module = __KernelGetCurThreadModuleId();
-	bool allowKernel = KernelModuleIsKernelMode(module) || hleIsKernelMode() || (cur ? (cur->nt.attr & PSP_THREAD_ATTR_KERNEL) != 0 : false);
+	bool allowKernel = KernelModuleIsPrivileged(module) || hleIsKernelMode() || (cur ? (cur->nt.attr & PSP_THREAD_ATTR_KERNEL) != 0 : false);
 	int retval = __KernelCreateThread(threadName, module, entry, prio, stacksize, attr, optionAddr, allowKernel);
 	if (retval < 0) {
 		return hleLogError(Log::sceKernel, retval);

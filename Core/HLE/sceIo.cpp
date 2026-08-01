@@ -37,6 +37,7 @@
 #include "Core/Debugger/MemBlockInfo.h"
 #include "Core/ELF/ParamSFO.h"
 #include "Core/MemMapHelpers.h"
+#include "Core/PSPLoaders.h"
 #include "Core/System.h"
 #include "Core/HDRemaster.h"
 #include "Core/SaveState.h"
@@ -672,6 +673,13 @@ void __IoInit() {
 	pspFileSystem.Mount("pfat0:", memstickSystem);
 
 	pspFileSystem.Mount("flash0:", flash0System);
+
+	if (PSP_CoreParameter().fileType == IdentifiedFileType::PSP_VSH) {
+		// Booting the PSP's own system software - it needs a real flash0 dump plus the other flash
+		// volumes, overriding the mount above. Only done for a VSH boot, so games keep seeing the
+		// exact mount list they always have (which savestates depend on).
+		MountVSHFlash();
+	}
 
 	if (g_RemasterMode) {
 		const std::string gameId = g_paramSFO.GetDiscID();

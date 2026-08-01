@@ -583,6 +583,14 @@ void NativeInit(int argc, const char *argv[], const CommandLineOptions &cmdLineO
 
 	if (boot_filename.empty() && cmdLineOptions.bootVSH.has_value() && cmdLineOptions.bootVSH.value()) {
 		boot_filename = g_Config.flash0Directory / "vsh/module/vshmain.prx";
+		if (File::Exists(boot_filename)) {
+			// No point showing the logo screen when we were told exactly what to boot.
+			skipLogo = true;
+		} else {
+			fprintf(stderr, "--vsh: no vsh/module/vshmain.prx under '%s' - see docs/XMB.md for the required firmware dump.\n",
+				g_Config.flash0Directory.c_str());
+			boot_filename.clear();
+		}
 	}
 
 	// Parse command line

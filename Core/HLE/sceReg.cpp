@@ -1142,11 +1142,14 @@ int sceRegGetKeys(int catHandle, u32 bufAddr, int num) {
 		return hleLogWarning(Log::sceReg, SCE_REG_ERROR_CATEGORY_NOT_FOUND);
 	}
 
+	// Only the keys we actually have - iterating to num would read past the end of the category.
 	count = std::min(count, num);
 
-	for (int i = 0; i < num; i++) {
+	for (int i = 0; i < count; i++) {
 		char *dest = (char *)Memory::GetPointerWrite(bufAddr + i * keyLen);
-		strncpy(dest, keyvals[i].name.c_str(), keyLen);
+		if (dest) {
+			strncpy(dest, keyvals[i].name.c_str(), keyLen);
+		}
 	}
 
 	return hleLogInfo(Log::sceReg, 0);

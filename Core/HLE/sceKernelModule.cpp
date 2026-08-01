@@ -979,6 +979,24 @@ static int gzipDecompress(u8 *OutBuffer, int OutBufferLength, u8 *InBuffer) {
 	return stream.total_out;
 }
 
+// A ~PSP module that has the compressed bit set isn't necessarily gzip - Sony's kernel also supports
+// a few in-house LZ variants, which are what the flash0 kd/ and vsh/ modules generally use.
+// Returns nullptr if the payload doesn't start with a compression format we recognize.
+static const char *DetectPrxCompression(const u8 *data, size_t size) {
+	if (size < 4) {
+		return nullptr;
+	}
+	if (data[0] == 0x1F && data[1] == 0x8B) {
+		return "gzip";
+	}
+	for (const char *magic : { "KL4E", "KL3E", "2RLZ", "1RLZ" }) {
+		if (!memcmp(data, magic, 4)) {
+			return magic;
+		}
+	}
+	return nullptr;
+}
+
 static void parsePrxLibInfo(const u8* ptr, u32 headerSize) {
 	// 0x0 - ~SCE
 	// 0x4 - the header's size
@@ -1043,11 +1061,7 @@ inline u32 Read32(const u8 *ptr) {
 	return value;
 }
 
-enum : u32 {
-	SCE_MAGIC = 0x4543537e,
-	PSP_MAGIC = 0x5053507e,
-	ELF_MAGIC = 0x464c457f,
-};
+// SCE_MAGIC / PSP_MAGIC / ELF_MAGIC live in Core/ELF/PSPElfTypes.h, since Identify_File needs them too.
 
 // filename is only used for dumping/metadata.
 static PSPModule *__KernelLoadELFFromPtr(const u8 *ptr, size_t elfSize, u32 loadAddress, bool fromTop, std::string *error_string, u32 *magic, std::string_view filename, u32 &error) {
@@ -1134,6 +1148,22 @@ static PSPModule *__KernelLoadELFFromPtr(const u8 *ptr, size_t elfSize, u32 load
 		if (isGzip) {
 			_dbg_assert_(Read32(ptr + 0x150) != ELF_MAGIC);
 
+			// Bail out cleanly on anything we can't decompress, rather than falling through to
+			// parse whatever's left in the buffer (still compressed, not a valid ELF) as if it
+			// were real code. Name the format when we can - the flash0 kd/ and vsh/ modules use
+			// Sony's KL4E and friends, which we don't implement. See docs/XMB.md.
+			const char *compression = DetectPrxCompression((const u8 *)ptr, decryptedSize);
+			if (compression && strcmp(compression, "gzip") != 0) {
+				*error_string = StringFromFormat("Module '%s' uses %s compression, which PPSSPP can't decompress", head->modname, compression);
+				ERROR_LOG(Log::sceModule, "%s", error_string->c_str());
+				delete[] newptr;
+				module->Cleanup();
+				kernelObjects.Destroy<PSPModule>(module->GetUID());
+				// TODO: Might be the wrong error code.
+				error = SCE_KERNEL_ERROR_FILEERR;
+				return nullptr;
+			}
+
 			// Can't decompress in place so we need a temporary buffer.
 			u8 *temp = (u8 *)malloc(decryptedSize);
 			_assert_msg_(temp != nullptr, "Failed to allocate gzip decompression buffer (decryptedSize: %d)", decryptedSize);
@@ -1141,11 +1171,10 @@ static PSPModule *__KernelLoadELFFromPtr(const u8 *ptr, size_t elfSize, u32 load
 			int outBytes = gzipDecompress((u8 *)ptr, maxElfSize, temp);
 			free(temp);
 			if (outBytes < 0) {
-				// Not necessarily actually gzip - some kd/ system modules (and possibly VSH
-				// modules) use KL4E compression instead, which we don't support decompressing.
-				// Bail out cleanly here rather than falling through to parse whatever's left
-				// in the buffer (still compressed, not a valid ELF) as if it were real code.
 				*error_string = StringFromFormat("Module '%s' decompression failed", head->modname);
+				delete[] newptr;
+				module->Cleanup();
+				kernelObjects.Destroy<PSPModule>(module->GetUID());
 				// TODO: Might be the wrong error code.
 				error = SCE_KERNEL_ERROR_FILEERR;
 				return nullptr;
@@ -1310,7 +1339,8 @@ static PSPModule *__KernelLoadELFFromPtr(const u8 *ptr, size_t elfSize, u32 load
 	module->nm.attribute = modinfo->moduleAttrs;
 	if ((module->nm.attribute & PSP_MODULE_VSH_MODE) != 0) {
 		// Used by the PSP's Visual Shell (VSH/XMB) and modules it loads, such as vshmain.prx.
-		// We don't do anything special with this yet, just recognizing it for now.
+		// Beyond counting as privileged (see KernelModuleIsPrivileged) we don't treat these
+		// specially yet - notably they still get loaded into the user partition. See docs/XMB.md.
 		INFO_LOG(Log::sceModule, "VSH mode module detected: %s", modinfo->name);
 	}
 	module->nm.version[0] = modinfo->moduleVersion & 0xFF;
@@ -1743,6 +1773,18 @@ bool KernelModuleIsKernelMode(SceUID uid) {
 	PSPModule *module = kernelObjects.Get<PSPModule>(uid, error);
 	if (module) {
 		return (module->nm.attribute & 0x1000) != 0;
+	} else {
+		return false;
+	}
+}
+
+bool KernelModuleIsPrivileged(SceUID uid) {
+	u32 error;
+	PSPModule *module = kernelObjects.Get<PSPModule>(uid, error);
+	if (module) {
+		// VSH-mode modules (the XMB and the modules it loads) are privileged on real hardware too,
+		// so they get to use the non-user thread attributes just like kernel modules do.
+		return (module->nm.attribute & (PSP_MODULE_VSH_MODE | PSP_MODULE_KERNEL_MODE)) != 0;
 	} else {
 		return false;
 	}

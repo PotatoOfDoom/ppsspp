@@ -454,6 +454,52 @@ bool Load_PSP_ELF_PBP(FileLoader *fileLoader, std::string_view discId, bool load
 	return __KernelLoadExec(finalName.c_str(), 0, error_string);
 }
 
+// Mounts the flash volumes the PSP's own system software - the VSH, better known as the XMB - needs.
+//
+// Unlike a game, the VSH lives in the PSP's flash and loads all its sibling modules and resources
+// through absolute flash0: paths, so the user's firmware dump has to be reachable as flash0:.
+// Called from __IoInit rather than from the loader below, because loadexec re-initializes the
+// kernel (and with it the mount table) after the loader has run. See docs/XMB.md.
+void MountVSHFlash() {
+	// fileToStart points at <dump>/vsh/module/vshmain.prx, so the dump root is three levels up.
+	const Path flash0Root = PSP_CoreParameter().fileToStart.NavigateUp().NavigateUp().NavigateUp();
+
+	// Replace the default flash0: mount (which on most platforms is the read-only asset filesystem
+	// containing only the bundled fonts) with the dump, so the VSH can enumerate and load from it.
+	pspFileSystem.Mount("flash0:", std::make_shared<DirectoryFileSystem>(&pspFileSystem, flash0Root, FileSystemFlags::FLASH));
+	INFO_LOG(Log::Loader, "VSH: mounted '%s' as flash0:", flash0Root.c_str());
+
+	// flash1: holds the registry and the settings the VSH writes back; flash2: and flash3: hold
+	// activation data and are normally empty. The real VSH expects all of these to exist.
+	for (const char *dev : { "flash1", "flash2", "flash3" }) {
+		const Path dir = GetSysDirectory(DIRECTORY_SYSTEM) / "flash" / dev;
+		if (!File::Exists(dir) && !File::CreateFullPath(dir)) {
+			ERROR_LOG(Log::Loader, "VSH: failed to create '%s' for %s:", dir.c_str(), dev);
+			continue;
+		}
+		pspFileSystem.Mount(std::string(dev) + ":", std::make_shared<DirectoryFileSystem>(&pspFileSystem, dir, FileSystemFlags::FLASH));
+	}
+}
+
+// Boots the VSH. The mounts happen later, from __IoInit - see MountVSHFlash.
+bool Load_PSP_VSH(std::string *error_string) {
+	// We boot through flash0:, not through the host path, so the dump has to be laid out like the
+	// real flash volume - otherwise MountVSHFlash derives the wrong root. Check that here rather
+	// than letting it surface as a confusing "could not find executable". Same path MountVSHFlash
+	// uses, so the two can't disagree.
+	const Path modulePath = PSP_CoreParameter().fileToStart;
+	if (!equalsNoCase(modulePath.NavigateUp().GetFilename(), "module") ||
+		!equalsNoCase(modulePath.NavigateUp().NavigateUp().GetFilename(), "vsh")) {
+		*error_string = StringFromFormat("'%s' must sit in a flash0 dump as vsh/module/vshmain.prx - see docs/XMB.md",
+			modulePath.ToVisualString().c_str());
+		return false;
+	}
+
+	pspFileSystem.SetStartingDirectory("flash0:/vsh/module");
+
+	return __KernelLoadExec("flash0:/vsh/module/vshmain.prx", 0, error_string);
+}
+
 bool Load_PSP_GE_Dump(FileLoader *fileLoader, std::string *error_string) {
 	auto umd = std::make_shared<BlobFileSystem>(&pspFileSystem, fileLoader, "data.ppdmp");
 	pspFileSystem.Mount("disc0:", umd);

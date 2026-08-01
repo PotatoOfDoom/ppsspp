@@ -31,6 +31,7 @@ enum class IdentifiedFileType {
 
 	PSP_PBP,
 	PSP_ELF,
+	PSP_VSH,  // The PSP's own system software (the XMB). See docs/XMB.md.
 	PSP_ISO,
 	PSP_ISO_NP,
 

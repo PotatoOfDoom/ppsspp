@@ -20,6 +20,14 @@
 #include "Common/CommonTypes.h"
 #include "Common/Swap.h"
 
+// Magic numbers found at the start of the various executable containers, as read
+// with a little-endian 32-bit load.
+enum : u32 {
+	SCE_MAGIC = 0x4543537e,  // "~SCE", a signed module.
+	PSP_MAGIC = 0x5053507e,  // "~PSP", an encrypted (and often compressed) module.
+	ELF_MAGIC = 0x464c457f,  // "\x7FELF", a plain ELF/PRX.
+};
+
 ///////////////////////
 // ELF Header Constants
 

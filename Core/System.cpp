@@ -341,6 +341,16 @@ static bool CPU_Init(FileLoader *fileLoader, IdentifiedFileType type, std::strin
 			Memory::g_MemorySize = Memory::RAM_DOUBLE_SIZE;
 		}
 		break;
+	case IdentifiedFileType::PSP_VSH:
+		if (Memory::g_PSPModel != PSP_MODEL_FAT) {
+			INFO_LOG(Log::Loader, "VSH, using full PSP-2000 memory access");
+			Memory::g_MemorySize = Memory::RAM_DOUBLE_SIZE;
+		}
+		// The VSH has no PARAM.SFO, so pin a stable ID instead of letting a fake one get
+		// generated from the filename - savestates and per-game config key off this.
+		g_paramSFO.SetValue("DISC_ID", "PSPVSH000", 16);
+		g_paramSFO.SetValue("TITLE", "PSP System Software", 128);
+		break;
 	case IdentifiedFileType::PPSSPP_GE_DUMP:
 		// Try to grab the disc ID from the filename or GE dump.
 		if (DiscIDFromGEDumpPath(g_CoreParameter.fileToStart, fileLoader, &geDumpDiscID)) {
@@ -484,6 +494,13 @@ static bool CPU_Init(FileLoader *fileLoader, IdentifiedFileType type, std::strin
 		}
 		break;
 	}
+
+	case IdentifiedFileType::PSP_VSH:
+		if (!Load_PSP_VSH(errorString)) {
+			ERROR_LOG(Log::Loader, "Failed to boot the VSH: %s", errorString->c_str());
+			return false;
+		}
+		break;
 
 	case IdentifiedFileType::PSP_ISO:
 	case IdentifiedFileType::PSP_ISO_NP:

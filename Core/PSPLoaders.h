@@ -25,6 +25,9 @@ class BlockDevice;
 
 bool Load_PSP_ISO(FileLoader *fileLoader, std::string *error_string);
 bool Load_PSP_ELF_PBP(FileLoader *fileLoader, std::string_view discId, bool loadGameConfigs, std::string *error_string);
+bool Load_PSP_VSH(std::string *error_string);
+// Mounts the flash volumes a VSH boot needs. Called from __IoInit, see the comment there.
+void MountVSHFlash();
 bool Load_PSP_GE_Dump(FileLoader *fileLoader, std::string *error_string);
 
 bool MountGameISO(FileLoader *fileLoader, std::string *errorString);
