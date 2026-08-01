@@ -42,6 +42,11 @@ STUB_MIN_WORDS = 5
 MODULE_ATTR_VSH, MODULE_ATTR_KERNEL = 0x0800, 0x1000
 
 
+def fail(msg):
+    print(f"error: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
 class Elf:
     """Just enough ELF to resolve virtual addresses back to file offsets."""
 
@@ -138,6 +143,20 @@ def read_imports(elf):
     return out
 
 
+def find_repo_root(start_dirs):
+    """Walks up from each starting point looking for a PPSSPP checkout."""
+    for start in start_dirs:
+        cur = os.path.abspath(start)
+        while True:
+            if os.path.isfile(os.path.join(cur, "Core", "HLE", "HLETables.cpp")):
+                return cur
+            parent = os.path.dirname(cur)
+            if parent == cur:
+                break
+            cur = parent
+    return None
+
+
 def load_ppsspp_tables(repo_root):
     """Parses Core/HLE/*.cpp into {library name: {nid: func name}}."""
     hle_dir = os.path.join(repo_root, "Core", "HLE")
@@ -230,16 +249,23 @@ def main():
     ap.add_argument("target", help="a .prx/.elf module, or a directory to walk")
     ap.add_argument("--summary", action="store_true", help="aggregate over a directory and rank what's missing")
     ap.add_argument("--missing-only", action="store_true", help="only show libraries with unimplemented imports")
-    ap.add_argument("--repo", default=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                    help="PPSSPP source root, for cross-referencing (default: this checkout)")
+    ap.add_argument("--repo", help="PPSSPP source root, for cross-referencing "
+                                   "(default: found by walking up from this script and the cwd)")
+    ap.add_argument("--no-cross-reference", action="store_true",
+                    help="just list imports, without saying what PPSSPP is missing")
     args = ap.parse_args()
 
-    tables = load_ppsspp_tables(args.repo)
-    if tables is None:
-        print(f"warning: no Core/HLE under {args.repo} - reporting imports without cross-referencing",
-              file=sys.stderr)
-    else:
-        print(f"cross-referencing against {len(tables)} libraries registered in {args.repo}")
+    tables = None
+    if not args.no_cross_reference:
+        repo = args.repo or find_repo_root([os.path.dirname(os.path.abspath(__file__)), os.getcwd()])
+        tables = load_ppsspp_tables(repo) if repo else None
+        if tables is None:
+            fail("could not find a PPSSPP checkout to cross-reference against"
+                 + (f" (looked under {args.repo})" if args.repo else "")
+                 + ".\n       Without it, every library would be reported as missing whether it is or"
+                   " not.\n       Pass --repo /path/to/ppsspp, or --no-cross-reference to just list"
+                   " the imports.")
+        print(f"cross-referencing against {len(tables)} libraries registered in {repo}")
 
     if os.path.isfile(args.target):
         info = analyze(args.target, tables)
@@ -286,7 +312,12 @@ def main():
             m["imports"] += len(nids)
             m["nids"] |= unresolved
 
-    print(f"\n{'=' * 78}\n{len(modules)} module(s) scanned, {len(missing)} library/libraries incomplete")
+    label = "incomplete" if tables is not None else "imported (not checked against PPSSPP)"
+    print(f"\n{'=' * 78}\n{len(modules)} module(s) scanned, {len(missing)} library/libraries {label}")
+    if any(os.sep + "kd" + os.sep in p or p.startswith("kd" + os.sep) for p, _i in modules):
+        print("\nNote: this scan includes kd/ - the kernel modules PPSSPP replaces with its own HLE and\n"
+              "never loads, so their imports don't need implementing. For the work list that actually\n"
+              "matters, scan just the modules the VSH loads:  <tree>/vsh/module")
     if skipped:
         print(f"{len(skipped)} file(s) skipped:")
         for rel, why in skipped[:10]:
@@ -296,7 +327,10 @@ def main():
     if missing:
         print(f"\n{'library':<30}{'modules':>8}{'imports':>9}{'missing NIDs':>14}  state")
         for lib, m in sorted(missing.items(), key=lambda kv: (-kv[1]["modules"], -kv[1]["imports"])):
-            state = "partial" if m["present"] else "NOT IMPLEMENTED"
+            if tables is None:
+                state = "not checked"
+            else:
+                state = "partial" if m["present"] else "NOT IMPLEMENTED"
             print(f"{lib:<30}{m['modules']:>8}{m['imports']:>9}{len(m['nids']):>14}  {state}")
     else:
         print("\nEverything these modules import is implemented.")
