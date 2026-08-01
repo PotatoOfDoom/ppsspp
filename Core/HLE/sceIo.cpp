@@ -1674,7 +1674,7 @@ struct DeviceSize {
 	u32_le sectorCount;
 };
 
-static u32 sceIoDevctl(const char *name, int cmd, u32 argAddr, int argLen, u32 outPtr, int outLen) {
+u32 sceIoDevctl(const char *name, int cmd, u32 argAddr, int argLen, u32 outPtr, int outLen) {
 	if (strcmp(name, "emulator:")) {
 		DEBUG_LOG(Log::sceIo,"sceIoDevctl(\"%s\", %08x, %08x, %i, %08x, %i)", name, cmd, argAddr, argLen, outPtr, outLen);
 	}

@@ -109,20 +109,29 @@ already an LZRC range decoder in `Core/FileSystems/tlzrc.cpp` that shares machin
 
 ### 2. The kernel/driver HLE surface — the actual frontier
 
-PPSSPP's HLE surface is essentially the user-mode API that games use. Practically none of what the
-VSH imports exists: `sceVshBridge`, `sceImpose_driver`, `sceSysreg_driver`, `sceSyscon_driver`,
-`sceIdStorage_driver`, `sceNand_driver`, `sceMScm_driver`, `sceChkreg`, `sceCertLoader`,
-`sceMesgLed`, `sceClockgen_driver`, `sceUmdMan_driver`, `sceMeCore`, `sceLibUpdateDL`,
-`sceVshCommonGui`/`sceVshCommonUtil`, and the kernel-side `sceUtility`/`sceRegistry`.
+PPSSPP's HLE surface is essentially the user-mode API that games use. `sceVshBridge` now exists
+(`Core/HLE/sceVshBridge.cpp`), but the rest of what the VSH imports doesn't: `sceImpose_driver`,
+`sceSysreg_driver`, `sceSyscon_driver`, `sceIdStorage_driver`, `sceNand_driver`, `sceMScm_driver`,
+`sceChkreg`, `sceCertLoader`, `sceMesgLed`, `sceClockgen_driver`, `sceUmdMan_driver`, `sceMeCore`,
+`sceLibUpdateDL`, `sceVshCommonGui`/`sceVshCommonUtil`, and the kernel-side
+`sceUtility`/`sceRegistry`.
+
+`sceVshBridge` itself is only partly wired: of the 87 exports whose names are known, five delegate
+to the drivers PPSSPP already has (ctrl reads, sampling mode, `sceIoDevctl`/`sceIoIoctl`) and the
+rest report UNIMPL. See the comment at the top of that file — in particular, kernel NIDs are
+obfuscated and firmware-specific, so the table targets 6.61 and will not resolve against an older
+dump.
 
 Unresolved imports are not fatal — `ImportFuncSymbol` writes a stub that returns
 `SCE_KERNEL_ERROR_LIBRARY_NOT_YET_LINKED` — so `vshmain` loads and runs, but every call into the
 kernel fails. Unresolved *variable* imports are worse: the relocation is skipped entirely, leaving
 whatever was baked into the `lui`/`addiu` pair.
 
-Adding these follows the normal recipe in `AGENTS.md`. Note that NIDs are the first four bytes of
-the SHA-1 of the exported function name, read little-endian, which is a useful way to check a
-name/NID pair before adding it.
+Adding these follows the normal recipe in `AGENTS.md`. For NIDs and names, use
+[PSPLibDoc](https://github.com/pspdev/psplibdoc) (GPL-2.0) — it has per-firmware exports for every
+module, and marks which names hash to their NID. For user-mode libraries the NID is the first four
+bytes of the SHA-1 of the export name read little-endian, which is a cheap way to check a name/NID
+pair; for kernel libraries on later firmwares it is not, because SCE obfuscated them.
 
 `scePaf` (the VSH's whole widget/resource framework) does **not** need HLE — `paf.prx` is a real
 module in the dump and runs as-is. Nothing in the HLE blacklist (`g_moduleMeta` in

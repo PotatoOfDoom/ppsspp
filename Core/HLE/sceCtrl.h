@@ -93,6 +93,11 @@ u32 __CtrlReadLatch();
 
 void Register_sceCtrl_driver();
 
+// Exposed so the kernel bridges (see sceVshBridge.cpp) can go through the same implementation.
+int sceCtrlReadBufferPositive(u32 ctrlDataPtr, u32 nBufs);
+int sceCtrlGetSamplingMode(u32 modePtr);
+u32 sceCtrlSetSamplingMode(u32 mode);
+
 u16 sceCtrlGetRightVibration();
 u16 sceCtrlGetLeftVibration();
 
