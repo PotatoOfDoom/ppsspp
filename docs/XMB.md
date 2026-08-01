@@ -182,8 +182,21 @@ Genuine kernel-mode modules are further out of reach: `MIPSState` has no COP0 at
 
 ### 4. The registry
 
-`Core/HLE/sceReg.cpp` is a static in-memory dump of a real PSP's registry with no write-back and no
-`flash1:` backing. The VSH reads it heavily and expects to write settings to it.
+`Core/HLE/sceReg.cpp` is a static const dump of a real PSP's registry. Writes used to be stubs that
+returned success while changing nothing, so the VSH's first-boot setup could never complete — it
+would write the owner name or language and read back the dumped value.
+
+`sceRegSetKeyValue` now works, through an in-memory overlay that shadows the static tree on reads.
+Two limits, both deliberate:
+
+- **Session-local.** The overlay is cleared on init and never reaches the host, so a title that pokes
+  at the system settings can't affect the next one, or the user's PPSSPP config. It *is* serialized
+  into savestates, since whoever wrote a value expects to read it back.
+- **Existing keys only.** Key handles are plain indices into the static array, so adding a key would
+  move the handles of everything after it. `sceRegCreateKey` therefore still refuses. The XMB writes
+  keys that exist in the dump, so this hasn't been a problem.
+
+There's still no `flash1:` backing — the registry and the mounted `flash1:` volume are unrelated.
 
 ## Debugging tips
 

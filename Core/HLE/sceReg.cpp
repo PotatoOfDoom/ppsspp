@@ -57,6 +57,31 @@ struct KeyValue {
 	const KeyValue *dirContents;  // intValue is the count.
 };
 
+// A value written at runtime. The tree further down is a const dump of a real PSP's registry, so
+// writes can't go into it - instead they land here and shadow it on reads. The XMB needs this: its
+// first-boot setup writes the owner name, language and clock settings and then reads them back.
+//
+// Deliberately session-local. __RegInit clears it and nothing reaches the host, so a title that
+// pokes at the system settings can't affect the next one, or the user's PPSSPP config. It is
+// serialized, since whoever wrote a value will expect to read it back after a savestate load.
+//
+// Only keys that already exist in the static tree can be overridden - see sceRegSetKeyValue. That
+// keeps key handles (which are just indices into the static array) stable, and covers what the XMB
+// does in practice.
+struct RegOverlayValue {
+	int type = (int)ValueType::FAIL;
+	int intValue = 0;   // INT: the value itself. STR/BIN: the byte length of data.
+	std::string data;   // STR/BIN payload. May contain NUL bytes, so never treat this as a C string.
+
+	void DoState(PointerWrap &p) {
+		Do(p, type);
+		Do(p, intValue);
+		Do(p, data);
+	}
+};
+// Keyed by "CATEGORY/SUBCATEGORY/keyname", without a leading slash.
+static std::map<std::string, RegOverlayValue> g_regOverlay;
+
 // TODO: /DATA/FONT/PROPERTY could just be generated from our fontRegistry in sceFont.cpp.
 
 // Partial dump of the PSP registry using tests/misc/reg.prx in pspautotests
@@ -961,10 +986,12 @@ void __RegInit() {
 	g_openRegistryMode = 0;
 	g_handleGen = 1337;
 	g_openCategories.clear();
+	g_regOverlay.clear();
 }
 
 void __RegShutdown() {
 	g_openCategories.clear();
+	g_regOverlay.clear();
 }
 
 static const KeyValue *LookupCategory(std::string_view path, int *count) {
@@ -1002,12 +1029,72 @@ static const KeyValue *LookupCategory(std::string_view path, int *count) {
 	return curDir;
 }
 
+static std::string OverlayKey(std::string_view categoryPath, std::string_view keyName) {
+	std::string key(StripPrefix("/", categoryPath));
+	key += '/';
+	key += keyName;
+	return key;
+}
+
+// The runtime override for a key, if one has been written. nullptr means "use the static value".
+static const RegOverlayValue *LookupOverlay(std::string_view categoryPath, std::string_view keyName) {
+	auto iter = g_regOverlay.find(OverlayKey(categoryPath, keyName));
+	return iter == g_regOverlay.end() ? nullptr : &iter->second;
+}
+
+// The type and byte size a key reports, taking any override into account.
+static void KeyTypeAndSize(const KeyValue &keyval, const RegOverlayValue *overlay, int *type, int *size) {
+	*type = overlay ? overlay->type : (int)keyval.type;
+	const int intValue = overlay ? overlay->intValue : keyval.intValue;
+	switch ((ValueType)*type) {
+	case ValueType::BIN:
+	case ValueType::STR: *size = intValue; break;
+	case ValueType::INT: *size = 4; break;
+	case ValueType::DIR:
+	default: *size = 0; break;
+	}
+}
+
+// Copies a key's value into guest memory, preferring an override over the static value.
+static int ReadKeyValue(const KeyValue &keyval, const RegOverlayValue *overlay, u32 bufAddr, u32 size, const char *func) {
+	const ValueType type = overlay ? (ValueType)overlay->type : keyval.type;
+	const int intValue = overlay ? overlay->intValue : keyval.intValue;
+	// Length-delimited, since BIN values (and some STR ones) contain NUL bytes.
+	const char *data = overlay ? overlay->data.data() : keyval.strValue;
+
+	switch (type) {
+	case ValueType::BIN:
+		Memory::MemcpyUnchecked(bufAddr, data, std::min(size, (u32)intValue));
+		return hleLogInfo(Log::sceReg, 0, "%s", overlay ? "(overridden)" : "");
+	case ValueType::STR:
+		Memory::MemcpyUnchecked(bufAddr, data, std::min(size, (u32)intValue));
+		return hleLogInfo(Log::sceReg, 0, "value: '%.*s'%s", intValue, data, overlay ? " (overridden)" : "");
+	case ValueType::INT:
+		if (size >= sizeof(u32))
+			Memory::WriteUnchecked_U32(intValue, bufAddr);
+		return hleLogInfo(Log::sceReg, 0, "value: %d (0x%08x)%s", intValue, intValue, overlay ? " (overridden)" : "");
+	case ValueType::DIR:
+	case ValueType::FAIL:
+	default:
+		// Return an error?
+		return hleLogWarning(Log::sceReg, 0, "Unexpected type for %s", func);
+	}
+}
+
 void __RegDoState(PointerWrap &p) {
-	auto s = p.Section("sceReg", 0, 1);
+	auto s = p.Section("sceReg", 0, 2);
 	if (!s)
 		return;
 	Do(p, g_openRegistryMode);
 	Do(p, g_openCategories);
+	if (s >= 2) {
+		Do(p, g_regOverlay);
+		Do(p, g_handleGen);
+	} else if (!g_openCategories.empty()) {
+		// g_handleGen wasn't serialized before, and __RegInit reset it - so make sure it can't
+		// re-mint a handle that one of the restored open categories is already using.
+		g_handleGen = std::max(g_handleGen, g_openCategories.rbegin()->first + 1);
+	}
 }
 
 // Registry level (it seems only /system can exist, so kinda pointless)
@@ -1019,7 +1106,7 @@ int sceRegOpenRegistry(u32 regParamAddr, int mode, u32 regHandleAddr) {
 	g_openRegistryMode = mode;
 
 	if (g_openRegistryMode != REG_OPEN_READONLY) {
-		WARN_LOG(Log::HLE, "sceRegOpenRegistry: Opening registry in non-readonly mode. This is not yet supported (we'll simply emulate it as read-only anyway).");
+		INFO_LOG(Log::sceReg, "sceRegOpenRegistry: opened for writing. Writes override keys in memory only, and don't persist past this session.");
 	}
 
 	return hleLogInfo(Log::sceReg, 0);
@@ -1174,27 +1261,19 @@ int sceRegGetKeyInfo(int catHandle, const char *name, u32 outKeyHandleAddr, u32 
 	for (int i = 0; i < count; i++) {
 		if (equals(keyvals[i].name, name)) {
 			// Found it!
+			int type = 0, size = 0;
+			KeyTypeAndSize(keyvals[i], LookupOverlay(iter->second.path, name), &type, &size);
 			if (Memory::IsValid4AlignedAddress(outKeyHandleAddr)) {
 				// Let's just make the index the key handle.
 				Memory::WriteUnchecked_U32(i, outKeyHandleAddr);
 			}
 			if (Memory::IsValid4AlignedAddress(outTypeAddr)) {
-				// Let's just make the index the key handle.
-				Memory::WriteUnchecked_U32((int)keyvals[i].type, outTypeAddr);
+				Memory::WriteUnchecked_U32(type, outTypeAddr);
 			}
-			int size = 0;
 			if (Memory::IsValid4AlignedAddress(outSizeAddr)) {
-				switch (keyvals[i].type) {
-				case ValueType::BIN: size = (int)keyvals[i].intValue; break;
-				case ValueType::STR: size = (int)keyvals[i].intValue; break;
-				case ValueType::DIR: size = 0; break;
-				case ValueType::INT: size = 4; break;
-				default: break;
-				}
-				// Let's just make the index the key handle.
 				Memory::WriteUnchecked_U32(size, outSizeAddr);
 			}
-			return hleLogInfo(Log::sceReg, 0, "handle: %d type: %d size: %d", i, (int)keyvals[i].type, size);
+			return hleLogInfo(Log::sceReg, 0, "handle: %d type: %d size: %d", i, type, size);
 		}
 	}
 
@@ -1219,21 +1298,15 @@ int sceRegGetKeyInfoByName(int catHandle, const char *name, u32 typeAddr, u32 si
 
 	for (int i = 0; i < count; i++) {
 		if (equals(keyvals[i].name, name)) {
-			int size = 0;
+			int type = 0, size = 0;
+			KeyTypeAndSize(keyvals[i], LookupOverlay(iter->second.path, name), &type, &size);
 			if (Memory::IsValid4AlignedAddress(typeAddr)) {
-				Memory::WriteUnchecked_U32((int)keyvals[i].type, typeAddr);
+				Memory::WriteUnchecked_U32(type, typeAddr);
 			}
 			if (Memory::IsValid4AlignedAddress(sizeAddr)) {
-				switch (keyvals[i].type) {
-				case ValueType::BIN: size = (int)keyvals[i].intValue; break;
-				case ValueType::STR: size = (int)keyvals[i].intValue; break;
-				case ValueType::DIR: size = 0; break;
-				case ValueType::INT: size = 4; break;
-				default: break;
-				}
 				Memory::WriteUnchecked_U32(size, sizeAddr);
 			}
-			return hleLogInfo(Log::sceReg, 0, "type: %d size: %d", (int)keyvals[i].type, size);
+			return hleLogInfo(Log::sceReg, 0, "type: %d size: %d", type, size);
 		}
 	}
 
@@ -1261,22 +1334,7 @@ int sceRegGetKeyValue(int catHandle, int keyHandle, u32 bufAddr, u32 size) {
 	}
 
 	const KeyValue &keyval = keyvals[keyHandle];
-	switch (keyval.type) {
-	case ValueType::BIN:
-		Memory::MemcpyUnchecked(bufAddr, keyval.strValue, std::min(size, (u32)keyval.intValue));
-		return hleLogInfo(Log::sceReg, 0);
-	case ValueType::STR:
-		Memory::MemcpyUnchecked(bufAddr, keyval.strValue, std::min(size, (u32)keyval.intValue));
-		return hleLogInfo(Log::sceReg, 0, "value: '%s'", keyval.strValue);
-	case ValueType::INT:
-		Memory::WriteUnchecked_U32(keyval.intValue, bufAddr);
-		return hleLogInfo(Log::sceReg, 0, "value: %d (0x%08x)", keyval.intValue, keyval.intValue);
-	case ValueType::DIR:
-	case ValueType::FAIL:
-	default:
-		// Return an error?
-		return hleLogWarning(Log::sceReg, 0, "Unexpected type for sceRegGetKeyValue");
-	}
+	return ReadKeyValue(keyval, LookupOverlay(iter->second.path, keyval.name), bufAddr, size, "sceRegGetKeyValue");
 }
 
 int sceRegGetKeyValueByName(int catHandle, const char *name, u32 bufAddr, u32 size) {
@@ -1302,34 +1360,71 @@ int sceRegGetKeyValueByName(int catHandle, const char *name, u32 bufAddr, u32 si
 		if (!equals(keyvals[i].name, name))
 			continue;
 
-		const KeyValue &keyval = keyvals[i];
-		switch (keyval.type) {
-		case ValueType::BIN:
-			Memory::MemcpyUnchecked(bufAddr, keyval.strValue, std::min(size, (u32)keyval.intValue));
-			return hleLogInfo(Log::sceReg, 0);
-		case ValueType::STR:
-			Memory::MemcpyUnchecked(bufAddr, keyval.strValue, std::min(size, (u32)keyval.intValue));
-			return hleLogInfo(Log::sceReg, 0, "value: '%s'", keyval.strValue);
-		case ValueType::INT:
-			if (size >= sizeof(u32))
-				Memory::WriteUnchecked_U32(keyval.intValue, bufAddr);
-			return hleLogInfo(Log::sceReg, 0, "value: %d (0x%08x)", keyval.intValue, keyval.intValue);
-		case ValueType::DIR:
-		case ValueType::FAIL:
-		default:
-			return hleLogWarning(Log::sceReg, 0, "Unexpected type for sceRegGetKeyValueByName");
-		}
+		return ReadKeyValue(keyvals[i], LookupOverlay(iter->second.path, name), bufAddr, size, "sceRegGetKeyValueByName");
 	}
 
 	return hleLogWarning(Log::sceReg, -1, "key with name '%s' not found", name);
 }
 
 int sceRegSetKeyValue(int catHandle, const char *name, u32 bufAddr, u32 size) {
-	return hleLogError(Log::sceReg, 0);
+	if (!name) {
+		return hleLogError(Log::sceReg, SCE_REG_ERROR_INVALID_NAME, "Invalid name pointer");
+	}
+	if (!Memory::IsValidRange(bufAddr, size)) {
+		return hleLogError(Log::sceReg, -1, "bad input addr");
+	}
+
+	auto iter = g_openCategories.find(catHandle);
+	if (iter == g_openCategories.end()) {
+		return hleLogError(Log::sceReg, 0, "Not an open category");
+	}
+
+	int count = 0;
+	const KeyValue *keyvals = LookupCategory(iter->second.path, &count);
+	if (!keyvals) {
+		return hleLogWarning(Log::sceReg, SCE_REG_ERROR_CATEGORY_NOT_FOUND);
+	}
+
+	for (int i = 0; i < count; i++) {
+		if (!equals(keyvals[i].name, name))
+			continue;
+
+		// The type is fixed by the key, we only take the value. Note that this means we don't
+		// support creating keys - see sceRegCreateKey.
+		RegOverlayValue value;
+		value.type = (int)keyvals[i].type;
+		switch (keyvals[i].type) {
+		case ValueType::INT:
+			if (size < sizeof(u32)) {
+				return hleLogError(Log::sceReg, -1, "int key needs 4 bytes, got %d", size);
+			}
+			value.intValue = Memory::Read_U32(bufAddr);
+			break;
+		case ValueType::STR:
+		case ValueType::BIN:
+			// Length-delimited on purpose: BIN values contain NUL bytes.
+			value.data.resize(size);
+			Memory::MemcpyUnchecked(value.data.data(), bufAddr, size);
+			value.intValue = (int)size;
+			break;
+		default:
+			return hleLogError(Log::sceReg, -1, "can't write a key of type %d", (int)keyvals[i].type);
+		}
+
+		g_regOverlay[OverlayKey(iter->second.path, name)] = value;
+		return hleLogInfo(Log::sceReg, 0, "%s/%s type %d size %d", iter->second.path.c_str(), name, value.type, (int)size);
+	}
+
+	// Creating a key would have to grow the category, which would move the indices we hand out as
+	// key handles. Not supported, see sceRegCreateKey.
+	return hleLogWarning(Log::sceReg, -1, "key with name '%s' not found", name);
 }
 
 int sceRegCreateKey(int catHandle, const char *name, int type, u32 size) {
-	return hleLogError(Log::sceReg, 0);
+	// Our registry is a const dump of a real PSP's, and key handles are plain indices into it, so a
+	// new key would shift the handles of everything after it. sceRegSetKeyValue can override any
+	// key that already exists, which is what the XMB needs in practice.
+	return hleLogError(Log::sceReg, 0, "UNIMPL - can't add keys to the registry dump");
 }
 // Speculated signature
 int sceRegRemoveKey(int catHandle, int key) {
