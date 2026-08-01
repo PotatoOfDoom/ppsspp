@@ -82,6 +82,15 @@ re-initializes the kernel, and with it the mount table, after the loader has run
 - **Sets the working directory** to `flash0:/vsh/module`.
 - **Pins a stable disc ID** (`PSPVSH000`) and title, since there's no `PARAM.SFO`. Without this a
   fake ID gets generated from the filename, which would make savestates and per-game config drift.
+- **Loads the shared libraries `vshmain` links against** — `paf.prx`, `common_gui.prx` and
+  `common_util.prx` — out of `flash0:/vsh/module/`. Unlike a game's `EBOOT.BIN`, `vshmain` is not
+  self-contained: on a real PSP those are already resident when it starts. `LoadVSHSharedModules`
+  loads all of them first (so cross-references between them resolve at load time rather than
+  depending on which `module_start` thread runs first), then starts them and makes the loadexec
+  thread wait for them, reusing the same mechanism plugins use. The deferred-linking path in
+  `sceKernelModule.cpp` patches `vshmain`'s still-missing import stubs as each one registers its
+  exports. Only the shared libraries are preloaded — the `*_plugin.prx` modules are loaded on demand
+  by the VSH itself.
 
 Also relevant, outside that function:
 
@@ -90,7 +99,13 @@ Also relevant, outside that function:
   before the module loader — which knows how to decrypt them — ever saw them.
 - VSH-mode modules (module attribute `0x0800`, `PSP_MODULE_VSH_MODE`) count as privileged for
   thread creation, so they may use the non-user thread attributes. See
-  `KernelModuleIsPrivileged` in `Core/HLE/sceKernelModule.cpp`.
+  `KernelModuleIsPrivileged` in `Core/HLE/sceKernelModule.cpp`. This matters in two places:
+  `sceKernelCreateThread`, and `__KernelStartModule`, which passes a module's *module* attribute
+  as the thread attribute when the module has no `module_start` — and `0x0800` is not a legal
+  user thread attribute.
+- After the shared modules are loaded, `KernelLogUnresolvedImports` lists every import library
+  that nothing provides, so a missing module shows up as one clear line at boot instead of as a
+  crash somewhere in the middle of `vshmain`.
 
 ## What's still missing
 
@@ -134,7 +149,8 @@ libraries now exist:
 
 Still missing: `sceSysreg_driver`, `sceSyscon_driver`, `sceNand_driver`, `sceMScm_driver`,
 `sceCertLoader`, `sceMesgLed`, `sceClockgen_driver`, `sceUmdMan_driver`, `sceMeCore`,
-`sceLibUpdateDL`, `sceVshCommonGui`/`sceVshCommonUtil`, and the kernel-side `sceUtility`.
+`sceLibUpdateDL`, and the kernel-side `sceUtility`. `sceVshCommonGui` and `sceVshCommonUtil` are
+*not* on that list — like `scePaf`, they come from real modules in the dump and don't need HLE.
 
 Two things learned while adding those, which shape what else is possible:
 
@@ -156,10 +172,12 @@ ECDSA-signed certificates over a real console's ConsoleId, which cannot be fabri
 console data is in neither a firmware dump nor a PSAR. If the XMB turns out to need a specific
 non-signed field, the UMD region codes at leaf 0x102 offset 0xB0 are the place to look.
 
-Unresolved imports are not fatal — `ImportFuncSymbol` writes a stub that returns
+Unresolved imports are not fatal *at load time* — `ImportFuncSymbol` writes a stub that returns
 `SCE_KERNEL_ERROR_LIBRARY_NOT_YET_LINKED` — so `vshmain` loads and runs, but every call into the
-kernel fails. Unresolved *variable* imports are worse: the relocation is skipped entirely, leaving
-whatever was baked into the `lui`/`addiu` pair.
+kernel fails. They tend to be fatal shortly afterwards: firmware code rarely checks these return
+values, so `0x8002013a` gets used as a pointer and the crash surfaces far from its cause. Unresolved
+*variable* imports are worse still: the relocation is skipped entirely, leaving whatever was baked
+into the `lui`/`addiu` pair.
 
 Adding these follows the normal recipe in `AGENTS.md`. For NIDs and names, use
 [PSPLibDoc](https://github.com/pspdev/psplibdoc) (GPL-2.0) — it has per-firmware exports for every
@@ -168,9 +186,9 @@ bytes of the SHA-1 of the export name read little-endian, which is a cheap way t
 pair; for kernel libraries on later firmwares it is not, because SCE obfuscated them.
 
 `scePaf` (the VSH's whole widget/resource framework) does **not** need HLE — `paf.prx` is a real
-module in the dump and runs as-is. Nothing in the HLE blacklist (`g_moduleMeta` in
-`Core/HLE/HLE.cpp`) matches `vshmain`, `paf` or the `*_plugin` modules, so they are loaded for real
-rather than faked.
+module in the dump and runs as-is, and PPSSPP now loads it (see the boot path above). Nothing in
+the HLE blacklist (`g_moduleMeta` in `Core/HLE/HLE.cpp`) matches `vshmain`, `paf` or the `*_plugin`
+modules, so they are loaded for real rather than faked.
 
 With a pre-decrypted tree this, not decompression, is what stands between here and an XMB frame.
 
@@ -231,5 +249,8 @@ without moving firmware around. Modules have to be decrypted first.
 - The interpreter (`--interpreter`) makes breakpoints far more reliable than the JITs.
 - `PPSSPPHeadless --debugger=PORT` breaks before anything runs, so you can step from the first
   instruction. See [WebSocketDebugger.md](WebSocketDebugger.md), and `Tools/wsdbg/`.
-- Watch for `Unknown module`/`Unknown syscall: unresolved import` lines in the log — that's the
-  list of libraries to implement next.
+- Watch for `no module provides library` lines at boot — that's the definitive list of what's
+  missing, printed once, before anything can go wrong because of it. At runtime, an actual call
+  through such a stub logs `Unresolved import <library>/<nid> called from '<module>'`; that lookup
+  finds the stub through `ra` (a stub is `jr ra; syscall`, so the `jal` that called it sits at
+  `ra - 8`) rather than through `pc`, which means different things on each CPU backend.

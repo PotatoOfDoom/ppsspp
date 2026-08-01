@@ -20,14 +20,20 @@
 #include <string>
 #include <memory>
 
+#include "Core/HLE/sceKernel.h"
+
 class FileLoader;
 class BlockDevice;
+class PSPModule;
 
 bool Load_PSP_ISO(FileLoader *fileLoader, std::string *error_string);
 bool Load_PSP_ELF_PBP(FileLoader *fileLoader, std::string_view discId, bool loadGameConfigs, std::string *error_string);
 bool Load_PSP_VSH(std::string *error_string);
 // Mounts the flash volumes a VSH boot needs. Called from __IoInit, see the comment there.
 void MountVSHFlash();
+// Loads and starts the flash0 modules vshmain links against. Returns true if the caller's thread
+// should wait for them (through vshModule->startingPlugins), like it does for plugins.
+bool LoadVSHSharedModules(PSPModule *vshModule, SceUID waitingThread);
 bool Load_PSP_GE_Dump(FileLoader *fileLoader, std::string *error_string);
 
 bool MountGameISO(FileLoader *fileLoader, std::string *errorString);

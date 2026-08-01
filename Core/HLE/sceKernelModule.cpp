@@ -16,6 +16,7 @@
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
 #include <algorithm>
+#include <map>
 #include <set>
 
 #include "zlib.h"
@@ -790,6 +791,50 @@ bool KernelFindImportByStubAddr(u32 stubAddr, std::string *importModuleName, u32
 		}
 	}
 	return false;
+}
+
+// Lists the import libraries that no loaded module (and no HLE module) provides, i.e. the stubs
+// WriteFuncMissingStub left as the plain "invalid syscall" trap. Calling one of those returns
+// SCE_KERNEL_ERROR_LIBRARY_NOT_YET_LINKED, and callers that don't check the return value tend to
+// use it as a pointer and crash far away from the actual cause - so it's much easier to debug as
+// a list up front. Only useful when running real firmware modules; for games everything either
+// resolves or is HLE'd.
+void KernelLogUnresolvedImports(const char *context) {
+	struct Unresolved {
+		int count = 0;
+		u32 firstNid = 0;
+	};
+	std::map<std::string, Unresolved> unresolved;
+
+	u32 error;
+	for (SceUID moduleId : loadedModules) {
+		PSPModule *module = kernelObjects.Get<PSPModule>(moduleId, error);
+		if (!module) {
+			continue;
+		}
+		for (const auto &func : module->importedFuncs) {
+			if (!Memory::IsValid4AlignedAddress(func.stubAddr + 4)) {
+				continue;
+			}
+			// The "no module index, no function index" syscall - see GetSyscallOp("", nid).
+			if (Memory::Read_Instruction(func.stubAddr + 4) != 0x03FFFFCC) {
+				continue;
+			}
+			Unresolved &entry = unresolved[func.moduleName];
+			if (entry.count++ == 0) {
+				entry.firstNid = func.nid;
+			}
+		}
+	}
+
+	if (unresolved.empty()) {
+		INFO_LOG(Log::Loader, "%s: all imports resolved", context);
+		return;
+	}
+	for (const auto &[library, entry] : unresolved) {
+		WARN_LOG(Log::Loader, "%s: no module provides library '%s' (%d unresolved function(s), e.g. %08x)",
+			context, library.c_str(), entry.count, entry.firstNid);
+	}
 }
 
 void PSPModule::Cleanup() {
@@ -1902,7 +1947,15 @@ bool __KernelLoadExec(const char *filename, u32 paramPtr, std::string *error_str
 
 	// Wait until plugins are loaded
 	module->startingPlugins.clear();
-	if (HLEPlugins::Load(module, __KernelGetCurThread())) {
+
+	// The VSH needs its shared flash0 libraries started the same way, and waited for the same way.
+	// Careful not to short-circuit the plugin load below - both need to run.
+	bool waitForVSHModules = false;
+	if (PSP_CoreParameter().fileType == IdentifiedFileType::PSP_VSH) {
+		waitForVSHModules = LoadVSHSharedModules(module, __KernelGetCurThread());
+	}
+
+	if (HLEPlugins::Load(module, __KernelGetCurThread()) || waitForVSHModules) {
 		__KernelWaitCurThread(WAITTYPE_PLUGIN, module->GetUID(), 1, 0, false, "started plugins");
 		__KernelReSchedule("Started plugins");
 	}
@@ -2149,7 +2202,10 @@ int __KernelStartModule(SceUID moduleId, u32 argsize, u32 argAddr, u32 returnVal
 
 		// TODO: Why do we skip smoption->attribute here?
 
-		SceUID threadID = __KernelCreateThread(module->nm.name, moduleId, entryAddr, priority, stacksize, attribute, 0, (module->nm.attribute & 0x1000) != 0);
+		// A module without a module_start ends up passing its *module* attribute as the thread
+		// attribute here, and PSP_MODULE_VSH_MODE (0x0800) isn't a legal user thread attribute -
+		// so VSH-mode modules need the same allowance kernel-mode ones get.
+		SceUID threadID = __KernelCreateThread(module->nm.name, moduleId, entryAddr, priority, stacksize, attribute, 0, KernelModuleIsPrivileged(moduleId));
 		_dbg_assert_(threadID > 0);
 		// TOOD: Check the return value and bail?
 		__KernelStartThreadValidate(threadID, argsize, argAddr);

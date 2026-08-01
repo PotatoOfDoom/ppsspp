@@ -508,6 +508,70 @@ bool Load_PSP_VSH(std::string *error_string) {
 	return __KernelLoadExec("flash0:/vsh/module/vshmain.prx", 0, error_string);
 }
 
+// The shared libraries vshmain.prx links against. On a real PSP these are already resident when
+// vshmain starts; PPSSPP has no HLE for them (they're ordinary user-space PRX in the firmware dump,
+// not kernel modules), so we load the real ones out of flash0. The deferred-linking path in
+// sceKernelModule.cpp patches vshmain's still-missing import stubs as each of these registers its
+// exports, which is what keeps vshmain from calling through a stub that just returns
+// SCE_KERNEL_ERROR_LIBRARY_NOT_YET_LINKED.
+//
+// Only the shared libraries belong here - the *_plugin.prx modules (game_plugin, video_plugin, ...)
+// are loaded on demand by the VSH itself and preloading them would be wrong.
+static const char * const g_vshSharedModules[] = {
+	"flash0:/vsh/module/paf.prx",          // scePaf* - the UI framework, by far the biggest of them
+	"flash0:/vsh/module/common_gui.prx",   // sceVshCommonGui
+	"flash0:/vsh/module/common_util.prx",  // sceVshCommonUtil
+};
+
+bool LoadVSHSharedModules(PSPModule *vshModule, SceUID waitingThread) {
+	// Load them all before starting any of them, so cross-references between them are resolved at
+	// load time instead of depending on which module_start thread happens to run first.
+	std::vector<SceUID> loaded;
+	for (const char *path : g_vshSharedModules) {
+		if (!pspFileSystem.GetFileInfo(path).exists) {
+			WARN_LOG(Log::Loader, "VSH: shared module '%s' is not in the dump, skipping", path);
+			continue;
+		}
+		std::string error;
+		SceUID moduleID = KernelLoadModule(path, &error);
+		if (moduleID < 0) {
+			ERROR_LOG(Log::Loader, "VSH: failed to load shared module '%s': %08x %s", path, moduleID, error.c_str());
+			continue;
+		}
+		INFO_LOG(Log::Loader, "VSH: loaded shared module '%s' (%d)", path, moduleID);
+		loaded.push_back(moduleID);
+	}
+
+	// Anything vshmain imports that we still couldn't provide will bite much later and much less
+	// obviously, so say so now while the cause is still visible.
+	KernelLogUnresolvedImports("VSH");
+
+	bool anyStarted = false;
+	for (SceUID moduleID : loaded) {
+		bool needsWait = false;
+		int ret = __KernelStartModule(moduleID, 0, 0, 0, nullptr, &needsWait);
+		if (ret < 0) {
+			ERROR_LOG(Log::Loader, "VSH: failed to start shared module %d: %08x", moduleID, ret);
+			continue;
+		}
+		if (!needsWait) {
+			// No module_start to run, so it's already usable - nothing to wait for.
+			continue;
+		}
+		u32 error;
+		PSPModule *module = kernelObjects.Get<PSPModule>(moduleID, error);
+		if (!module) {
+			continue;
+		}
+		// Reuse the same mechanism plugins use: the loadexec thread blocks until every module we
+		// started here has returned from its module_start. See __KernelReturnFromModuleFunc.
+		module->pluginWaitingThread = waitingThread;
+		vshModule->startingPlugins.push_back(moduleID);
+		anyStarted = true;
+	}
+	return anyStarted;
+}
+
 bool Load_PSP_GE_Dump(FileLoader *fileLoader, std::string *error_string) {
 	auto umd = std::make_shared<BlobFileSystem>(&pspFileSystem, fileLoader, "data.ppdmp");
 	pspFileSystem.Mount("disc0:", umd);
