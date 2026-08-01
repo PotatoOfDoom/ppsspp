@@ -168,6 +168,10 @@ def classify(path):
     return "data"
 
 
+def count_files(path):
+    return sum(len(files) for _root, _dirs, files in os.walk(path)) if os.path.isdir(path) else 0
+
+
 def run_pspdecrypt(tool, src, outdir, verbose):
     """Extracts and decrypts the PSAR contents. Returns the directory holding F0/F1."""
     cmd = [tool, "-A", "-O", outdir, src]
@@ -176,13 +180,27 @@ def run_pspdecrypt(tool, src, outdir, verbose):
         proc = subprocess.run(cmd, capture_output=not verbose, text=True)
     except OSError as e:
         fail(f"could not run {tool}: {e}")
+
+    def show_output():
+        """pspdecrypt reports its problems on stdout, so don't swallow them."""
+        for stream, out in ((proc.stdout, sys.stderr), (proc.stderr, sys.stderr)):
+            if stream:
+                out.write(stream if stream.endswith("\n") else stream + "\n")
+
     if proc.returncode != 0:
-        if not verbose and proc.stderr:
-            sys.stderr.write(proc.stderr)
-        fail(f"{tool} exited with {proc.returncode}. Re-run with --verbose for its full output.")
-    if not os.path.isdir(os.path.join(outdir, "F0")):
-        fail(f"{tool} produced no F0/ directory under {outdir} - nothing to install.\n"
-             "       Its output layout may have changed; run it by hand and use --check on the result.")
+        show_output()
+        fail(f"{tool} exited with {proc.returncode}.")
+
+    # Note: pspdecrypt exits 0 even when it couldn't decrypt the PSAR, and creates an empty F0/
+    # anyway - so neither the exit code nor the directory's existence means anything. Count files.
+    extracted = count_files(os.path.join(outdir, "F0"))
+    if extracted == 0:
+        show_output()
+        fail(f"{tool} extracted nothing into {outdir}/F0.\n"
+             "       Its own output is above - a \"Error when decrypting PSAR block\" there means the\n"
+             "       input isn't a firmware update it can handle (a game EBOOT.PBP looks similar but\n"
+             "       has no firmware in it). Make sure this is an official Sony update EBOOT.PBP.")
+    print(f"{tool} extracted {extracted} file(s)")
     return outdir
 
 
