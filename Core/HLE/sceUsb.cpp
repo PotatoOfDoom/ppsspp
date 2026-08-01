@@ -210,6 +210,11 @@ static int sceUsbstorBootSetCapacity(u32 capacity) {
 	return hleReportError(Log::HLE, 0, "unimplemented");
 }
 
+// Exports the VSH imports that we only know a NID for.
+static int sceUsbUnknown() {
+	return hleLogError(Log::HLE, 0, "UNIMPL - export known only by NID");
+}
+
 const HLEFunction sceUsb[] =
 {
 	{0XAE5DE6AF, &WrapI_CUU<sceUsbStart>,            "sceUsbStart",                             'i', "sxx"},
@@ -222,6 +227,10 @@ const HLEFunction sceUsb[] =
 	{0X5BE0E002, &WrapI_IUU<sceUsbWaitState>,        "sceUsbWaitState",                         'x', "xip"},
 	{0X616F2B61, &WrapI_IUU<sceUsbWaitStateCB>,      "sceUsbWaitStateCB",                       'x', "xip"},
 	{0X1C360735, nullptr,                            "sceUsbWaitCancel",                        '?', ""   },
+	// Imported by the VSH; no recovered name for either. Stubbed rather than left out so they don't
+	// come back as unresolved imports returning SCE_KERNEL_ERROR_LIBRARY_NOT_YET_LINKED.
+	{0X89DE0DC5, &WrapI_V<sceUsbUnknown>,            "sceUsb_89DE0DC5",                         'i', ""   },
+	{0X8BFC3DE8, &WrapI_V<sceUsbUnknown>,            "sceUsb_8BFC3DE8",                         'i', ""   },
 };
 
 const HLEFunction sceUsbstor[] =

@@ -977,7 +977,38 @@ static int sceRtcGetLastReincarnatedTime(u32 tickPtr)
 static int sceRtcSetAlarmTick(u32 unknown1, u32 unknown2)
 {
 	ERROR_LOG_REPORT(Log::sceRtc, "UNIMPL sceRtcSetAlarmTick(%x, %x)", unknown1, unknown2);
-	return 0; 
+	return 0;
+}
+
+// There's no alarm hardware to read, so we report "no alarm set" - which is also what the registry
+// the VSH reads alongside this says (/CONFIG/ALARM alarm_N_time = -1). The important part is that
+// we write the output at all: left as a nullptr table entry this returned
+// SCE_KERNEL_ERROR_LIBRARY_NOT_YET_LINKED and never touched the buffer, so the caller went on to
+// use whatever was on its stack as a tick.
+static int sceRtcGetAlarmTick(u32 tickPtr)
+{
+	if (!Memory::IsValidRange(tickPtr, 8)) {
+		return hleLogError(Log::sceRtc, SCE_KERNEL_ERROR_INVALID_POINTER, "bad tick pointer");
+	}
+	Memory::Write_U64(0, tickPtr);
+	return hleLogDebug(Log::sceRtc, 0, "no alarm hardware, reporting none set");
+}
+
+static int sceRtcIsAlarmed()
+{
+	return hleLogDebug(Log::sceRtc, 0, "no alarm hardware, never alarmed");
+}
+
+// We never fire an alarm, so accepting the registration and never calling back is the honest
+// emulation of a PSP that has no alarm pending.
+static int sceRtcRegisterCallback(int cbId)
+{
+	return hleLogDebug(Log::sceRtc, 0, "no alarm hardware, callback %d will never fire", cbId);
+}
+
+static int sceRtcUnregisterCallback(int cbId)
+{
+	return hleLogDebug(Log::sceRtc, 0);
 }
 
 // Caller must check outPtr and srcTickPtr.
@@ -1162,10 +1193,10 @@ const HLEFunction sceRtc[] =
 	{0X203CEB0D, &WrapI_U<sceRtcGetLastReincarnatedTime>,  "sceRtcGetLastReincarnatedTime",  'i', "x"  },
 	{0X7D1FBED3, &WrapI_UU<sceRtcSetAlarmTick>,            "sceRtcSetAlarmTick",             'i', "xx" },
 	{0XF5FCC995, nullptr,                                  "sceRtcGetCurrentNetworkTick",    '?', ""   },
-	{0X81FCDA34, nullptr,                                  "sceRtcIsAlarmed",                '?', ""   },
-	{0XFB3B18CD, nullptr,                                  "sceRtcRegisterCallback",         '?', ""   },
-	{0X6A676D2D, nullptr,                                  "sceRtcUnregisterCallback",       '?', ""   },
-	{0XC2DDBEB5, nullptr,                                  "sceRtcGetAlarmTick",             '?', ""   },
+	{0X81FCDA34, &WrapI_V<sceRtcIsAlarmed>,                "sceRtcIsAlarmed",                'i', ""   },
+	{0XFB3B18CD, &WrapI_I<sceRtcRegisterCallback>,         "sceRtcRegisterCallback",         'i', "i"  },
+	{0X6A676D2D, &WrapI_I<sceRtcUnregisterCallback>,       "sceRtcUnregisterCallback",       'i', "i"  },
+	{0XC2DDBEB5, &WrapI_U<sceRtcGetAlarmTick>,             "sceRtcGetAlarmTick",             'i', "x"  },
 };
 
 void Register_sceRtc()

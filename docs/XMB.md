@@ -2,7 +2,10 @@
 
 The XMB (XrossMediaBar) is the PSP's system software. Its main module is
 `flash0:/vsh/module/vshmain.prx`, and internally it's usually called the VSH ("Visual Shell").
-PPSSPP has the beginnings of a boot path for it. **It does not get to a drawn frame yet** — see
+PPSSPP has the beginnings of a boot path for it. Against a real 6.61 dump it gets as far as
+starting `vshmain`, `paf`, `common_gui` and `common_util`, bringing up the `SCE_VSH_GRAPHICS`
+thread, reading its settings out of the registry, loading the system fonts and submitting GE
+display lists — then dies on a bad pointer. **It does not reach a usable XMB** — see
 [What's still missing](#whats-still-missing).
 
 Nothing in this repo contains PSP firmware, and PPSSPP neither ships nor downloads it. Running the
@@ -143,14 +146,21 @@ libraries now exist:
 
 | Library | File | State |
 | --- | --- | --- |
-| `sceVshBridge` | `Core/HLE/sceVshBridge.cpp` | 87 of 189 exports named; the ones that map onto something PPSSPP has are wired through |
+| `sceVshBridge` | `Core/HLE/sceVshBridge.cpp` | 87 of 189 exports named, plus the 43 name-less ones a real 6.61 `vshmain`/`paf` import, as `sceVshBridge_<NID>`; the ones that map onto something PPSSPP has are wired through |
 | `sceChkreg_driver` | `Core/HLE/sceChkreg.cpp` | complete — PS code, region check, PSP model, PS flags |
 | `sceIdStorage_driver` | `Core/HLE/sceIdStorage.cpp` | complete API, but no leaf contents (see below) |
 
-Still missing: `sceSysreg_driver`, `sceSyscon_driver`, `sceNand_driver`, `sceMScm_driver`,
+Still missing entirely: `sceSysreg_driver`, `sceSyscon_driver`, `sceNand_driver`, `sceMScm_driver`,
 `sceCertLoader`, `sceMesgLed`, `sceClockgen_driver`, `sceUmdMan_driver`, `sceMeCore`,
-`sceLibUpdateDL`, and the kernel-side `sceUtility`. `sceVshCommonGui` and `sceVshCommonUtil` are
-*not* on that list — like `scePaf`, they come from real modules in the dump and don't need HLE.
+`sceLibUpdateDL`, and the kernel-side `sceUtility`. A boot against real 6.61 additionally wanted
+`sceBSMan`, `sceMlnBridge`, `sceResmgr`, `sceUtility_netparam_internal`, `sceNpCommerce2Store` and
+`sceNpCommerce2RegCam` — one to three functions each, imported but not called yet.
+`sceVshCommonGui` and `sceVshCommonUtil` are *not* on any of these lists — like `scePaf`, they come
+from real modules in the dump and don't need HLE.
+
+Existing modules can be short a NID or two as well, which looks the same from the outside but is a
+much smaller job. `KernelLogUnresolvedImports` separates the two cases at boot: "no module provides
+library X" versus "HLE library X is missing N NID(s)".
 
 Two things learned while adding those, which shape what else is possible:
 
@@ -178,6 +188,13 @@ kernel fails. They tend to be fatal shortly afterwards: firmware code rarely che
 values, so `0x8002013a` gets used as a pointer and the crash surfaces far from its cause. Unresolved
 *variable* imports are worse still: the relocation is skipped entirely, leaving whatever was baked
 into the `lui`/`addiu` pair.
+
+That is why a table entry that admits it does nothing beats no entry at all, and it applies to
+`nullptr` entries in existing modules too — those return the same error and never write their output
+parameters, so the caller reads whatever was on its stack. `sceRtcGetAlarmTick`,
+`sceRtcIsAlarmed`, `sceRtcRegisterCallback`, `sceRtcUnregisterCallback`, `scePowerIsRequest` and
+`scePowerCancelRequest` were all `nullptr` until the XMB called them; they now answer "no alarm
+hardware" / "no power request pending", which is what a PPSSPP with neither actually has.
 
 Adding these follows the normal recipe in `AGENTS.md`. For NIDs and names, use
 [PSPLibDoc](https://github.com/pspdev/psplibdoc) (GPL-2.0) — it has per-firmware exports for every

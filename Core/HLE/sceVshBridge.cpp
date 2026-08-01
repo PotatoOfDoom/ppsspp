@@ -31,9 +31,8 @@
 //  * Where one name appears under several NIDs, those are the per-hardware-model builds of
 //    vshbridge.prx (01g, 02g, ...), which we give the same implementation.
 //
-// The library exports 189 functions on 6.61; the 87 whose names are known are listed here. The
-// rest still log usefully without a table entry - an unknown NID in a known library reports the
-// library name and NID at import time.
+// The library exports 189 functions on 6.61; the 87 whose names are known are listed here, plus the
+// 43 name-less ones a real vshmain.prx/paf.prx were seen importing, as sceVshBridge_<NID>.
 //
 // Calls that map onto something PPSSPP implements are wired through to it with hleCall, so there is
 // exactly one implementation of each: ctrl reads and sampling mode, sceIoDevctl/sceIoIoctl,
@@ -54,6 +53,22 @@
 static int VshBridgeUnimpl() {
 	return hleLogError(Log::HLE, 0, "UNIMPL");
 }
+
+// Same thing for the exports we only know a NID for. Templated on the NID so each one gets its own
+// "reported" flag: without a table entry these trap as unresolved imports and return
+// SCE_KERNEL_ERROR_LIBRARY_NOT_YET_LINKED, which firmware code happily uses as a pointer, but some
+// of them (0x21c243fe) are called every frame and would drown the log if they shouted every time.
+template <u32 nid>
+static int VshBridgeUnknown() {
+	static bool reported = false;
+	if (!reported) {
+		reported = true;
+		return hleLogError(Log::HLE, 0, "UNIMPL - export known only by NID");
+	}
+	return hleLogDebug(Log::HLE, 0, "UNIMPL");
+}
+
+#define VSHBRIDGE_UNKNOWN(nid) {0X##nid, &WrapI_V<VshBridgeUnknown<0X##nid>>, "sceVshBridge_" #nid, 'i', "", HLE_KERNEL_SYSCALL}
 
 static int vshCtrlReadBufferPositive(u32 ctrlDataPtr, u32 nBufs) {
 	return hleCall(sceCtrl, int, sceCtrlReadBufferPositive, ctrlDataPtr, nBufs);
@@ -193,6 +208,54 @@ const HLEFunction sceVshBridge[] = {
 	{0X837C457A, &WrapI_V<VshBridgeUnimpl>,            "vshUnregisterPowerCallback",             'i', "",       HLE_KERNEL_SYSCALL},
 	{0XAF135135, &WrapI_V<VshBridgeUnimpl>,            "vshVaudioChReserve",                     'i', "",       HLE_KERNEL_SYSCALL},
 	{0X81706DA7, &WrapI_V<VshBridgeUnimpl>,            "vshVaudioOutputBlocking",                'i', "",       HLE_KERNEL_SYSCALL},
+
+	// Exports with no recovered name, listed by NID. These are the ones a 6.61 vshmain.prx and
+	// paf.prx actually import - not the full set of unnamed exports, just the ones observed being
+	// asked for. Without an entry each of these traps as an unresolved import and hands the caller
+	// SCE_KERNEL_ERROR_LIBRARY_NOT_YET_LINKED, which is worse than admitting we don't know.
+	VSHBRIDGE_UNKNOWN(0296CA2B),
+	VSHBRIDGE_UNKNOWN(0C0D5913),
+	VSHBRIDGE_UNKNOWN(0D684A0B),
+	VSHBRIDGE_UNKNOWN(12B07B05),
+	VSHBRIDGE_UNKNOWN(157E2EAF),
+	VSHBRIDGE_UNKNOWN(1D5C579F),
+	VSHBRIDGE_UNKNOWN(21C243FE),
+	VSHBRIDGE_UNKNOWN(27BDA326),
+	VSHBRIDGE_UNKNOWN(29CDFFBA),
+	VSHBRIDGE_UNKNOWN(2EBD2323),
+	VSHBRIDGE_UNKNOWN(3512F4BC),
+	VSHBRIDGE_UNKNOWN(3A46C639),
+	VSHBRIDGE_UNKNOWN(3C90E435),
+	VSHBRIDGE_UNKNOWN(3D30FEB6),
+	VSHBRIDGE_UNKNOWN(582B5281),
+	VSHBRIDGE_UNKNOWN(59197BE8),
+	VSHBRIDGE_UNKNOWN(5B7F3339),
+	VSHBRIDGE_UNKNOWN(5E0F5543),
+	VSHBRIDGE_UNKNOWN(63047647),
+	VSHBRIDGE_UNKNOWN(63E69956),
+	VSHBRIDGE_UNKNOWN(65692F57),
+	VSHBRIDGE_UNKNOWN(734D0F4F),
+	VSHBRIDGE_UNKNOWN(787A8BCD),
+	VSHBRIDGE_UNKNOWN(791FCD43),
+	VSHBRIDGE_UNKNOWN(79B916E1),
+	VSHBRIDGE_UNKNOWN(7A90D816),
+	VSHBRIDGE_UNKNOWN(7B14CE2B),
+	VSHBRIDGE_UNKNOWN(7D1C13B5),
+	VSHBRIDGE_UNKNOWN(7E117907),
+	VSHBRIDGE_UNKNOWN(9056DE3A),
+	VSHBRIDGE_UNKNOWN(9347D693),
+	VSHBRIDGE_UNKNOWN(9427C909),
+	VSHBRIDGE_UNKNOWN(9940D95C),
+	VSHBRIDGE_UNKNOWN(AAB9A9EF),
+	VSHBRIDGE_UNKNOWN(ABB84565),
+	VSHBRIDGE_UNKNOWN(B8B07CAF),
+	VSHBRIDGE_UNKNOWN(CC864F6E),
+	VSHBRIDGE_UNKNOWN(CD1A2C46),
+	VSHBRIDGE_UNKNOWN(D39DE400),
+	VSHBRIDGE_UNKNOWN(D3A07961),
+	VSHBRIDGE_UNKNOWN(D47041CA),
+	VSHBRIDGE_UNKNOWN(E533E98C),
+	VSHBRIDGE_UNKNOWN(F702FC07),
 };
 
 void Register_sceVshBridge() {

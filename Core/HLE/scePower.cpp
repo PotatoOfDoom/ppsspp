@@ -262,6 +262,17 @@ static int scePowerUnregisterCallback(int slotId) {
 	}
 }
 
+// Suspend/standby requests aren't emulated - nothing ever puts a request in - so there is never one
+// pending to report or to cancel. Answering that truthfully is better than the nullptr table entry
+// these had, which returned SCE_KERNEL_ERROR_LIBRARY_NOT_YET_LINKED to a caller expecting 0 or 1.
+static int scePowerIsRequest() {
+	return hleLogDebug(Log::HLE, 0, "no power request pending");
+}
+
+static int scePowerCancelRequest() {
+	return hleLogDebug(Log::HLE, 0, "no power request pending");
+}
+
 static int sceKernelPowerLock(int lockType) {
 	if (lockType == 0) {
 		return hleLogDebug(Log::HLE, 0);
@@ -582,8 +593,8 @@ static const HLEFunction scePower[] = {
 	{0X165CE085, nullptr,                                     "scePowerGetPowerSwMode",            '?', ""   },
 	{0XD6D016EF, nullptr,                                     "scePowerLock",                      '?', ""   },
 	{0XCA3D34C1, nullptr,                                     "scePowerUnlock",                    '?', ""   },
-	{0XDB62C9CF, nullptr,                                     "scePowerCancelRequest",             '?', ""   },
-	{0X7FA406DD, nullptr,                                     "scePowerIsRequest",                 '?', ""   },
+	{0XDB62C9CF, &WrapI_V<scePowerCancelRequest>,             "scePowerCancelRequest",             'i', ""   },
+	{0X7FA406DD, &WrapI_V<scePowerIsRequest>,                 "scePowerIsRequest",                 'i', ""   },
 	{0X2B7C7CF4, nullptr,                                     "scePowerRequestStandby",            '?', ""   },
 	{0XAC32C9CC, nullptr,                                     "scePowerRequestSuspend",            '?', ""   },
 	{0X2875994B, nullptr,                                     "scePower_2875994B",                 '?', ""   },

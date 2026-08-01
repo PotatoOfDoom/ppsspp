@@ -793,12 +793,12 @@ bool KernelFindImportByStubAddr(u32 stubAddr, std::string *importModuleName, u32
 	return false;
 }
 
-// Lists the import libraries that no loaded module (and no HLE module) provides, i.e. the stubs
-// WriteFuncMissingStub left as the plain "invalid syscall" trap. Calling one of those returns
-// SCE_KERNEL_ERROR_LIBRARY_NOT_YET_LINKED, and callers that don't check the return value tend to
-// use it as a pointer and crash far away from the actual cause - so it's much easier to debug as
-// a list up front. Only useful when running real firmware modules; for games everything either
-// resolves or is HLE'd.
+// Lists the imports left as the plain "invalid syscall" trap WriteFuncMissingStub writes - either
+// because nothing provides the library at all, or because it's a library we HLE but the NID isn't
+// in our table. Calling one of those returns SCE_KERNEL_ERROR_LIBRARY_NOT_YET_LINKED, and callers
+// that don't check the return value tend to use it as a pointer and crash far away from the actual
+// cause - so it's much easier to debug as a list up front. Only useful when running real firmware
+// modules; for games everything either resolves or is HLE'd.
 void KernelLogUnresolvedImports(const char *context) {
 	struct Unresolved {
 		int count = 0;
@@ -832,8 +832,15 @@ void KernelLogUnresolvedImports(const char *context) {
 		return;
 	}
 	for (const auto &[library, entry] : unresolved) {
-		WARN_LOG(Log::Loader, "%s: no module provides library '%s' (%d unresolved function(s), e.g. %08x)",
-			context, library.c_str(), entry.count, entry.firstNid);
+		// Separate the two cases - "we've never heard of this library" is a very different piece of
+		// work from "we have it, these particular NIDs just aren't in the table yet".
+		if (GetHLEModuleIndex(library) != -1) {
+			WARN_LOG(Log::Loader, "%s: HLE library '%s' is missing %d NID(s), e.g. %08x",
+				context, library.c_str(), entry.count, entry.firstNid);
+		} else {
+			WARN_LOG(Log::Loader, "%s: no module provides library '%s' (%d unresolved function(s), e.g. %08x)",
+				context, library.c_str(), entry.count, entry.firstNid);
+		}
 	}
 }
 
