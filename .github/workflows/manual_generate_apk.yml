@@ -55,11 +55,13 @@ jobs:
       #  with:
       #    ndk-version: r21e
 
-      - name: Test androidGitVersion
-        run: |
-          echo "count=${{steps.valid-tags.outputs.count}}"
-          gradle --quiet androidGitVersion
-      
+      # The com.gladed.androidgitversion plugin was replaced by hand-rolled version logic in
+      # android/build.gradle.kts, so the 'androidGitVersion' task this used to call no longer
+      # exists and the step failed before anything was ever compiled. The version is derived
+      # during configuration now, so assembling the APK exercises it anyway.
+      - name: Show version tag count
+        run: echo "count=${{steps.valid-tags.outputs.count}}"
+
       - name: Assemble APK
         run: ./gradlew assemble${{ github.event.inputs.buildVariant }} --stacktrace
       
