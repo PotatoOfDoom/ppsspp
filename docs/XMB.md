@@ -263,7 +263,16 @@ without moving firmware around. Modules have to be decrypted first.
 
 ## Debugging tips
 
-- The interpreter (`--interpreter`) makes breakpoints far more reliable than the JITs.
+- **Reproduce crashes on the interpreter** (`-i`). Breakpoints are far more reliable there than on the
+  JITs, and it's the only backend where a bad memory access can tell you *which* instruction faulted
+  and which register held the address:
+
+  ```
+  Read Word: Invalid access at deadc007 ... op: lw a0, 0x18(t3) (address = t3(deadbfef) + 24)
+  ```
+
+  Under a JIT the pc reported at a fault is the start of the compiled block, not the faulting
+  instruction, so that line is left out rather than pointing at the wrong opcode.
 - `PPSSPPHeadless --debugger=PORT` breaks before anything runs, so you can step from the first
   instruction. See [WebSocketDebugger.md](WebSocketDebugger.md), and `Tools/wsdbg/`.
 - Watch for `no module provides library` lines at boot — that's the definitive list of what's

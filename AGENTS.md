@@ -126,9 +126,14 @@ platforms. Where arch is x64 or ARM64.
 
 ## Debugging and breakpoint considerations
 
-It might be worth trying the interpreter - all types of breakpoints are the most reliable with this CPU backend.
-The JITs are much, much faster and in theory also support breakpoints, but especially from websockets there seem
-to be trouble.
+It might be worth trying the interpreter (`-i`; `-r` is the IR interpreter) - all types of breakpoints are the
+most reliable with this CPU backend. The JITs are much, much faster and in theory also support breakpoints, but
+especially from websockets there seem to be trouble.
+
+The interpreter also gets you a much better crash report: it's the only backend where `currentMIPS->pc` and the
+register file are exact per instruction, so `Core_MemoryException` can name the faulting instruction and print
+the register the bad address came from. Under a JIT the pc it gets is the start of the compiled block, so that
+detail is suppressed rather than guessed at.
 
 ## Quick rebuild on Linux
 

@@ -28,6 +28,10 @@
 #include "Common/GPU/GraphicsContext.h"
 #include "Common/Thread/ThreadUtil.h"
 #include "Common/Log.h"
+#include "Common/StringUtils.h"
+#include "Core/MIPS/MIPSCodeUtils.h"
+#include "Core/MIPS/MIPSTables.h"
+#include "Core/MIPS/JitCommon/JitCommon.h"
 #include "Core/Core.h"
 #include "Core/Config.h"
 #include "Core/HLE/HLE.h"
@@ -569,6 +573,34 @@ static std::string ModuleAddressSuffix(u32 address) {
 	}
 }
 
+// Describes the instruction that faulted, and for a load or store, which register held the bad
+// address and what it contained - "the pointer came from t3, which held deadbfef" is usually the
+// first real clue about where a wild pointer came from.
+//
+// Interpreter only, and deliberately so: under a JIT the pc we get here is the start of the
+// compiled block rather than the faulting instruction, so we'd confidently name the wrong one, and
+// the register file is only synced at block boundaries anyway.
+static std::string FaultingInstructionDetails(u32 pc) {
+	// Test what's actually running rather than g_Config - headless takes its CPU core from the
+	// command line without writing it back to the config, so the two can disagree. A null jit is
+	// exactly the plain interpreter; the IR interpreter has one and runs blocks like a JIT does.
+	if (MIPSComp::jit != nullptr || !Memory::IsValid4AlignedAddress(pc)) {
+		return std::string();
+	}
+	const MIPSOpcode op = Memory::Read_Instruction(pc);
+	char disasm[128];
+	MIPSDisAsm(op, pc, disasm, sizeof(disasm), true);
+	std::string result = std::string(" op: ") + disasm;
+
+	if ((MIPSGetInfo(op) & IN_RS_ADDR) == IN_RS_ADDR) {
+		const int rs = (op >> 21) & 0x1F;
+		const int offset = SignExtend16ToS32(op);
+		result += StringFromFormat(" (address = %s(%08x) %c %d)", MIPSDebugInterface::GetRegName(0, rs).c_str(),
+			currentMIPS->r[rs], offset < 0 ? '-' : '+', offset < 0 ? -offset : offset);
+	}
+	return result;
+}
+
 void Core_MemoryException(u32 address, u32 accessSize, u32 pc, MemoryExceptionType type, std::string_view additionalInfo, bool forceReport) {
 	const char *desc = MemoryExceptionTypeAsString(type);
 	// In jit, we only flush PC when bIgnoreBadMemAccess is off.
@@ -578,6 +610,7 @@ void Core_MemoryException(u32 address, u32 accessSize, u32 pc, MemoryExceptionTy
 	if ((CPUCore)g_Config.iCpuCore == CPUCore::INTERPRETER) {
 		snprintf(pcDetails, sizeof(pcDetails), " PC %08x%s LR %08x%s", currentMIPS->pc, ModuleAddressSuffix(currentMIPS->pc).c_str(), currentMIPS->r[MIPS_REG_RA], ModuleAddressSuffix(currentMIPS->r[MIPS_REG_RA]).c_str());
 	}
+	const std::string instructionDetails = FaultingInstructionDetails(pc);
 
 	const std::string addressSuffix = ModuleAddressSuffix(address);
 
@@ -596,13 +629,13 @@ void Core_MemoryException(u32 address, u32 accessSize, u32 pc, MemoryExceptionTy
 
 	if (action == ExceptionAction::Ignore) {
 		// Simplest logging and continue.
-		WARN_LOG(Log::MemMap, "%s: Invalid access at %08x%s (size %08x) %s%.*s", desc, address, addressSuffix.c_str(), accessSize, pcDetails, (int)additionalInfo.length(), additionalInfo.data());
+		WARN_LOG(Log::MemMap, "%s: Invalid access at %08x%s (size %08x) %s%s%.*s", desc, address, addressSuffix.c_str(), accessSize, pcDetails, instructionDetails.c_str(), (int)additionalInfo.length(), additionalInfo.data());
 		return;
 	}
 
 	const std::string stackTrace = FormatStackTrace(WalkCurrentStack(-1));
 	// Do the most detailed logging we can.
-	ERROR_LOG(Log::MemMap, "%s: Invalid access at %08x%s (size %08x) %s%.*s\n%s", desc, address, addressSuffix.c_str(), accessSize, pcDetails, (int)additionalInfo.length(), additionalInfo.data(), stackTrace.c_str());
+	ERROR_LOG(Log::MemMap, "%s: Invalid access at %08x%s (size %08x) %s%s%.*s\n%s", desc, address, addressSuffix.c_str(), accessSize, pcDetails, instructionDetails.c_str(), (int)additionalInfo.length(), additionalInfo.data(), stackTrace.c_str());
 	if (action == ExceptionAction::Break) {
 		MIPSExceptionInfo &e = g_exceptionInfo;
 		e = {};
