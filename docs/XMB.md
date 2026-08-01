@@ -11,13 +11,24 @@ VSH requires files you supply yourself, from a PSP you own or from an official S
 ## How to try it
 
 1. Get a `flash0` tree, either by dumping it from a PSP or by extracting `DATA.PSAR` from an official
-   Sony update `EBOOT.PBP` (which carries the complete flash0 contents) with a tool like
-   [pspdecrypt](https://github.com/John-K/pspdecrypt). PPSSPP neither ships nor fetches firmware.
+   Sony update `EBOOT.PBP`, which carries the complete flash0 contents. PPSSPP neither ships nor
+   fetches firmware.
 
-   **Decrypt and decompress the modules on the PC side while you're at it.** PPSSPP takes a plain
-   ELF/PRX straight to `ElfReader` and never enters the `~PSP` decrypt/decompress path at all
-   (`__KernelLoadELFFromPtr` gates that whole block on the `~PSP` magic), so a pre-decrypted tree
-   sidesteps the KL4E problem below entirely. This is the recommended route.
+   `Tools/extract_flash0.py` does the update-file route and validates the result:
+
+   ```
+   python3 Tools/extract_flash0.py EBOOT.PBP -o <flash0 directory>
+   python3 Tools/extract_flash0.py --check <flash0 directory>   # validate a tree you already have
+   ```
+
+   It delegates the actual extraction to [pspdecrypt](https://github.com/John-K/pspdecrypt), which
+   has the PSAR keys and the KL4E decompressor; what it adds is knowing which files PPSSPP needs,
+   where they go, and whether they came out in a state it can load.
+
+   **Decrypt and decompress the modules on the PC side** (which is what the script does by default).
+   PPSSPP takes a plain ELF/PRX straight to `ElfReader` and never enters the `~PSP`
+   decrypt/decompress path at all (`__KernelLoadELFFromPtr` gates that whole block on the `~PSP`
+   magic), so a pre-decrypted tree sidesteps the KL4E problem below entirely.
 
    Note that per-console data — IdStorage, the PSID, the MAC address — is in neither a PSAR nor a
    plain flash0 dump. PPSSPP has to fake those regardless.
@@ -97,8 +108,9 @@ Module 'vshmain' uses KL4E compression, which PPSSPP can't decompress
 log rather than showing up as a generic failure.
 
 **This is avoidable, not a hard blocker** — decrypt and decompress the tree on the PC side and
-PPSSPP loads the resulting plain ELFs directly, as described under "How to try it". Implementing the
-decompressor is only needed to load an untouched flash0 dump.
+PPSSPP loads the resulting plain ELFs directly, as described under "How to try it".
+`Tools/extract_flash0.py --check` tells you whether any module in a tree is still compressed.
+Implementing the decompressor is only needed to load an untouched flash0 dump.
 
 If someone does implement it: KL4E was reverse engineered from firmware 6.60 (originally
 `UtilsForKernel_6C6887EE` in `sysmem.prx`), and the well-known implementations —
