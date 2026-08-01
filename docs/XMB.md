@@ -210,6 +210,20 @@ Two limits, both deliberate:
 
 There's still no `flash1:` backing — the registry and the mounted `flash1:` volume are unrelated.
 
+## Finding out what's actually needed
+
+`Tools/dump_prx_imports.py` walks a module's `.lib.stub` import tables and cross-references every
+(library, NID) pair against PPSSPP's own HLE tables, so it can say what a dump wants that PPSSPP
+doesn't have:
+
+```
+python3 Tools/dump_prx_imports.py <flash0 dir>/vsh/module/vshmain.prx
+python3 Tools/dump_prx_imports.py <flash0 dir> --summary       # ranked work list for a whole tree
+```
+
+Its output is library names, NIDs and counts, so it's a way to work out what to implement next
+without moving firmware around. Modules have to be decrypted first.
+
 ## Debugging tips
 
 - The interpreter (`--interpreter`) makes breakpoints far more reliable than the JITs.
