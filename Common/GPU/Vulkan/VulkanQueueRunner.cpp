@@ -3,6 +3,7 @@
 #include "Common/GPU/DataFormat.h"
 #include "Common/GPU/Vulkan/VulkanQueueRunner.h"
 #include "Common/GPU/Vulkan/VulkanRenderManager.h"
+#include "Common/VR/PPSSPPVRVulkan.h"
 #include "Common/Log.h"
 #include "Common/TimeUtil.h"
 
@@ -107,6 +108,147 @@ bool VulkanQueueRunner::InitBackbufferFramebuffers(int width, int height, FrameD
 	return true;
 }
 
+bool VulkanQueueRunner::InitVRFramebuffers() {
+	VRVulkanSwapchainDesc desc;
+	if (!GetVRVulkanSwapchainDesc(&desc)) {
+		return false;
+	}
+
+	if (!vrFramebuffers_[0].framebuffers.empty()) {
+		// Compare the images too, not just the size - the VR renderer can recreate its swapchains
+		// at the same resolution, and our views would then be pointing at destroyed images.
+		if (desc.width == vrWidth_ && desc.height == vrHeight_ && GetVRVulkanSwapchainImage(0, 0) == vrFirstImage_) {
+			return true;
+		}
+		DestroyVRFramebuffers();
+	}
+
+	VkDevice device = vulkan_->GetDevice();
+
+	// The backbuffer render pass declares an UNDEFINED initial layout for the depth buffer and
+	// resolves the rest with subpass dependencies, so unlike the regular backbuffer depth buffer
+	// this one needs no explicit barrier - and therefore no command buffer.
+	const VkFormat depthFormat = vulkan_->GetDeviceInfo().preferredDepthStencilFormat;
+	VkImageCreateInfo image_info = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+	image_info.imageType = VK_IMAGE_TYPE_2D;
+	image_info.format = depthFormat;
+	image_info.extent.width = desc.width;
+	image_info.extent.height = desc.height;
+	image_info.extent.depth = 1;
+	image_info.mipLevels = 1;
+	image_info.arrayLayers = 1;
+	image_info.samples = VK_SAMPLE_COUNT_1_BIT;
+	image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	image_info.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT;
+
+	VmaAllocationCreateInfo allocCreateInfo{};
+	allocCreateInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+	VmaAllocationInfo allocInfo{};
+
+	VkResult res = vmaCreateImage(vulkan_->Allocator(), &image_info, &allocCreateInfo, &vrDepth_.image, &vrDepth_.alloc, &allocInfo);
+	if (res != VK_SUCCESS) {
+		ERROR_LOG(Log::G3D, "Failed to create the VR depth buffer");
+		return false;
+	}
+	vrDepth_.format = depthFormat;
+	vulkan_->SetDebugName(vrDepth_.image, VK_OBJECT_TYPE_IMAGE, "VRDepth");
+
+	VkImageViewCreateInfo depth_view_info = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+	depth_view_info.image = vrDepth_.image;
+	depth_view_info.format = depthFormat;
+	depth_view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+	depth_view_info.subresourceRange.levelCount = 1;
+	depth_view_info.subresourceRange.layerCount = 1;
+	depth_view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+	res = vkCreateImageView(device, &depth_view_info, nullptr, &vrDepth_.view);
+	if (res != VK_SUCCESS) {
+		ERROR_LOG(Log::G3D, "Failed to create the VR depth buffer view");
+		DestroyVRFramebuffers();
+		return false;
+	}
+	vulkan_->SetDebugName(vrDepth_.view, VK_OBJECT_TYPE_IMAGE_VIEW, "VRDepth");
+
+	// Same render pass as the real backbuffer uses, so that the pipelines we compile for the
+	// backbuffer are compatible with these framebuffers too.
+	VkRenderPass renderPass = GetCompatibleRenderPass()->Get(vulkan_, RenderPassType::BACKBUFFER, VK_SAMPLE_COUNT_1_BIT);
+
+	for (int eye = 0; eye < 2; eye++) {
+		vrFramebuffers_[eye].views.resize(desc.imageCount);
+		vrFramebuffers_[eye].framebuffers.resize(desc.imageCount);
+		for (uint32_t i = 0; i < desc.imageCount; i++) {
+			VkImage image = GetVRVulkanSwapchainImage(eye, i);
+			if (image == VK_NULL_HANDLE) {
+				ERROR_LOG(Log::G3D, "Missing OpenXR swapchain image %d for eye %d", (int)i, eye);
+				DestroyVRFramebuffers();
+				return false;
+			}
+
+			VkImageViewCreateInfo view_info = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+			view_info.image = image;
+			view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+			view_info.format = desc.format;
+			view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			view_info.subresourceRange.levelCount = 1;
+			view_info.subresourceRange.layerCount = 1;
+			res = vkCreateImageView(device, &view_info, nullptr, &vrFramebuffers_[eye].views[i]);
+			if (res != VK_SUCCESS) {
+				ERROR_LOG(Log::G3D, "Failed to create a view for OpenXR swapchain image %d", (int)i);
+				DestroyVRFramebuffers();
+				return false;
+			}
+
+			VkImageView attachments[2] = { vrFramebuffers_[eye].views[i], vrDepth_.view };
+			VkFramebufferCreateInfo fb_info = { VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
+			fb_info.renderPass = renderPass;
+			fb_info.attachmentCount = 2;
+			fb_info.pAttachments = attachments;
+			fb_info.width = desc.width;
+			fb_info.height = desc.height;
+			fb_info.layers = 1;
+			res = vkCreateFramebuffer(device, &fb_info, nullptr, &vrFramebuffers_[eye].framebuffers[i]);
+			if (res != VK_SUCCESS) {
+				ERROR_LOG(Log::G3D, "Failed to create a framebuffer for OpenXR swapchain image %d", (int)i);
+				DestroyVRFramebuffers();
+				return false;
+			}
+		}
+	}
+
+	vrWidth_ = desc.width;
+	vrHeight_ = desc.height;
+	vrFirstImage_ = GetVRVulkanSwapchainImage(0, 0);
+	INFO_LOG(Log::G3D, "Created VR framebuffers: %dx%d, %d images per eye", vrWidth_, vrHeight_, (int)desc.imageCount);
+	return true;
+}
+
+void VulkanQueueRunner::DestroyVRFramebuffers() {
+	for (auto &eye : vrFramebuffers_) {
+		for (VkFramebuffer fb : eye.framebuffers) {
+			if (fb) {
+				vulkan_->Delete().QueueDeleteFramebuffer(fb);
+			}
+		}
+		for (VkImageView view : eye.views) {
+			if (view) {
+				vulkan_->Delete().QueueDeleteImageView(view);
+			}
+		}
+		eye.framebuffers.clear();
+		eye.views.clear();
+	}
+	if (vrDepth_.view) {
+		vulkan_->Delete().QueueDeleteImageView(vrDepth_.view);
+	}
+	if (vrDepth_.image) {
+		_dbg_assert_(vrDepth_.alloc);
+		vulkan_->Delete().QueueDeleteImageAllocation(vrDepth_.image, vrDepth_.alloc);
+	}
+	vrDepth_ = {};
+	vrWidth_ = 0;
+	vrHeight_ = 0;
+	vrFirstImage_ = VK_NULL_HANDLE;
+}
+
 bool VulkanQueueRunner::InitDepthStencilBuffer(VkCommandBuffer cmd, VulkanBarrierBatch *barriers) {
 	const VkFormat depth_format = vulkan_->GetDeviceInfo().preferredDepthStencilFormat;
 	int aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
@@ -175,6 +317,7 @@ bool VulkanQueueRunner::InitDepthStencilBuffer(VkCommandBuffer cmd, VulkanBarrie
 }
 
 void VulkanQueueRunner::DestroyBackBuffers() {
+	DestroyVRFramebuffers();
 	if (depth_.view) {
 		vulkan_->Delete().QueueDeleteImageView(depth_.view);
 	}
@@ -313,7 +456,18 @@ void VulkanQueueRunner::RunSteps(std::vector<VKRStep *> &steps, int curFrame, Fr
 		case VKRStepType::RENDER:
 		{
 			bool perform = true;
-			if (!step.render.framebuffer) {
+			if (!step.render.framebuffer && IsVRVulkanRenderer()) {
+				// In VR the final image goes to an OpenXR swapchain image instead of the real
+				// backbuffer, so there's nothing to acquire and nothing to present. We also keep
+				// recording into the main command buffer - the "present" command buffer only
+				// exists so that presentation can be submitted separately, which doesn't apply.
+				// (VulkanRenderManager::Run has already set frameData.skipSwap for us.)
+				// Skip if we don't currently hold a swapchain image - that happens for the extra
+				// batches a mid-frame sync (screenshot, GE debugger) produces.
+				if (!IsVRVulkanImageAcquired() || !InitVRFramebuffers()) {
+					perform = false;
+				}
+			} else if (!step.render.framebuffer) {
 				if (emitLabels) {
 					vkCmdEndDebugUtilsLabelEXT(cmd);
 				}
@@ -1047,8 +1201,11 @@ void VulkanQueueRunner::PerformRenderPass(const VKRStep &step, VkCommandBuffer c
 	// NOTE: Unconditionally flushes recordBarrier_.
 	VKRRenderPass *renderPass = PerformBindFramebufferAsRenderTarget(step, cmd);
 
-	int curWidth = step.render.framebuffer ? step.render.framebuffer->width : vulkan_->GetBackbufferWidth();
-	int curHeight = step.render.framebuffer ? step.render.framebuffer->height : vulkan_->GetBackbufferHeight();
+	// In VR, a step without a framebuffer renders into an OpenXR swapchain image, whose size has
+	// nothing to do with the window surface.
+	const bool vrBackbuffer = !step.render.framebuffer && IsVRVulkanRenderer() && vrWidth_ > 0;
+	int curWidth = step.render.framebuffer ? step.render.framebuffer->width : (vrBackbuffer ? vrWidth_ : vulkan_->GetBackbufferWidth());
+	int curHeight = step.render.framebuffer ? step.render.framebuffer->height : (vrBackbuffer ? vrHeight_ : vulkan_->GetBackbufferHeight());
 
 	VKRFramebuffer *fb = step.render.framebuffer;
 
@@ -1133,7 +1290,7 @@ void VulkanQueueRunner::PerformRenderPass(const VKRStep &step, VkCommandBuffer c
 		}
 
 		case VKRRenderCommand::VIEWPORT:
-			if (fb != nullptr) {
+			if (fb != nullptr || vrBackbuffer) {
 				vkCmdSetViewport(cmd, 0, 1, &c.viewport.vp);
 			} else {
 				const VkViewport &vp = c.viewport.vp;
@@ -1152,7 +1309,7 @@ void VulkanQueueRunner::PerformRenderPass(const VKRStep &step, VkCommandBuffer c
 
 		case VKRRenderCommand::SCISSOR:
 		{
-			if (fb != nullptr) {
+			if (fb != nullptr || vrBackbuffer) {
 				vkCmdSetScissor(cmd, 0, 1, &c.scissor.scissor);
 			} else {
 				// Rendering to backbuffer. Might need to rotate.
@@ -1269,6 +1426,34 @@ void VulkanQueueRunner::PerformRenderPass(const VKRStep &step, VkCommandBuffer c
 			break;
 		}
 	}
+
+	if (!fb && IsVRVulkanRenderer()) {
+		// The VR mouse cursor. The OpenGL path draws it with a scissored clear after the frame,
+		// which has no equivalent in Vulkan - but a rect clear of the current attachment does the
+		// same thing, as long as we do it while the render pass is still open.
+		int x, y, w, h;
+		if (GetVRVulkanCursorRect(&x, &y, &w, &h)) {
+			VkClearAttachment attachment{};
+			attachment.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			attachment.colorAttachment = 0;
+			attachment.clearValue.color.float32[0] = 1.0f;
+			attachment.clearValue.color.float32[1] = 1.0f;
+			attachment.clearValue.color.float32[2] = 1.0f;
+			attachment.clearValue.color.float32[3] = 1.0f;
+
+			VkClearRect rect{};
+			rect.baseArrayLayer = 0;
+			rect.layerCount = 1;
+			rect.rect.offset.x = std::max(0, x);
+			rect.rect.offset.y = std::max(0, y);
+			rect.rect.extent.width = std::min(w, vrWidth_ - rect.rect.offset.x);
+			rect.rect.extent.height = std::min(h, vrHeight_ - rect.rect.offset.y);
+			if ((int)rect.rect.extent.width > 0 && (int)rect.rect.extent.height > 0) {
+				vkCmdClearAttachments(cmd, 1, &attachment, 1, &rect);
+			}
+		}
+	}
+
 	vkCmdEndRenderPass(cmd);
 
 	_dbg_assert_(recordBarrier_.empty());
@@ -1288,7 +1473,7 @@ VKRRenderPass *VulkanQueueRunner::PerformBindFramebufferAsRenderTarget(const VKR
 	VKRRenderPass *renderPass;
 	int numClearVals = 0;
 	VkClearValue clearVal[4]{};
-	VkFramebuffer framebuf;
+	VkFramebuffer framebuf = VK_NULL_HANDLE;
 	int w;
 	int h;
 
@@ -1365,11 +1550,24 @@ VKRRenderPass *VulkanQueueRunner::PerformBindFramebufferAsRenderTarget(const VKR
 			VKRRenderPassStoreAction::STORE, VKRRenderPassStoreAction::DONT_CARE, VKRRenderPassStoreAction::DONT_CARE,
 		};
 		renderPass = GetRenderPass(key);
-		framebuf = backbuffer_;
 
-		// Raw, rotated backbuffer size.
-		w = vulkan_->GetBackbufferWidth();
-		h = vulkan_->GetBackbufferHeight();
+		if (IsVRVulkanRenderer()) {
+			// Render into the OpenXR swapchain image for the eye we're currently drawing.
+			const int eye = GetVRVulkanCurrentEye();
+			const uint32_t index = GetVRVulkanCurrentImageIndex();
+			_dbg_assert_(eye >= 0 && eye < 2);
+			if (eye >= 0 && eye < 2 && index < vrFramebuffers_[eye].framebuffers.size()) {
+				framebuf = vrFramebuffers_[eye].framebuffers[index];
+			}
+			w = vrWidth_;
+			h = vrHeight_;
+		} else {
+			framebuf = backbuffer_;
+
+			// Raw, rotated backbuffer size.
+			w = vulkan_->GetBackbufferWidth();
+			h = vulkan_->GetBackbufferHeight();
+		}
 
 		Uint8x4ToFloat4(clearVal[0].color.float32, step.render.clearColor);
 		numClearVals = hasDepth ? 2 : 1;  // We might do depth-less backbuffer in the future, though doubtful of the value.
@@ -1383,8 +1581,9 @@ VKRRenderPass *VulkanQueueRunner::PerformBindFramebufferAsRenderTarget(const VKR
 	rp_begin.framebuffer = framebuf;
 
 	VkRect2D rc = step.render.renderArea;
-	if (!step.render.framebuffer) {
+	if (!step.render.framebuffer && !IsVRVulkanRenderer()) {
 		// Rendering to backbuffer, must rotate, just like scissors.
+		// (The VR "backbuffer" is never rotated - the compositor owns the display orientation.)
 		DisplayRect<int> rotated_rc{ rc.offset.x, rc.offset.y, (int)rc.extent.width, (int)rc.extent.height };
 		RotateRectToDisplay(rotated_rc, vulkan_->GetBackbufferWidth(), vulkan_->GetBackbufferHeight());
 

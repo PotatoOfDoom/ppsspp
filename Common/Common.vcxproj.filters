@@ -407,6 +407,9 @@
     <ClInclude Include="VR\PPSSPPVR.h">
       <Filter>VR</Filter>
     </ClInclude>
+    <ClInclude Include="VR\PPSSPPVRVulkan.h">
+      <Filter>VR</Filter>
+    </ClInclude>
     <ClInclude Include="VR\VRBase.h">
       <Filter>VR</Filter>
     </ClInclude>

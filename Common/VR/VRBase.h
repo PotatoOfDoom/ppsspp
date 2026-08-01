@@ -15,6 +15,8 @@
 #define _USE_MATH_DEFINES
 #include <cmath>
 #include <cassert>
+#include <string>
+#include <vector>
 
 #if defined(_DEBUG) && (defined(XR_USE_GRAPHICS_API_OPENGL) || defined(XR_USE_GRAPHICS_API_OPENGL_ES))
 
@@ -67,6 +69,9 @@ typedef struct {
 	uint32_t TextureSwapChainIndex;
 	ovrSwapChain ColorSwapChain;
 	void* ColorSwapChainImage;
+	// The format the swapchain was actually created with. For GL this is a GL internal format,
+	// for Vulkan a VkFormat. Both fit in an int64_t, which is also what OpenXR uses.
+	int64_t ColorFormat;
 	unsigned int* GLDepthBuffers;
 	unsigned int* GLFrameBuffers;
 
@@ -113,6 +118,7 @@ typedef struct {
 	uint64_t frameIndex;
 	ovrApp appState;
 	XrTime predictedDisplayTime;
+	XrGraphicsBindingVulkanKHR graphicsBindingVulkan;
 } engine_t;
 
 enum VRPlatformFlag {
@@ -121,14 +127,25 @@ enum VRPlatformFlag {
 	VR_PLATFORM_EXTENSION_INSTANCE,
 	VR_PLATFORM_EXTENSION_PASSTHROUGH,
 	VR_PLATFORM_EXTENSION_PERFORMANCE,
+	VR_PLATFORM_RENDERER_VULKAN,
 	VR_PLATFORM_TRACKING_FLOOR,
 	VR_PLATFORM_MAX
 };
 
 void VR_Init( void* system, const char* name, int version );
 void VR_Destroy( engine_t* engine );
-void VR_EnterVR( engine_t* engine );
+// Tears the whole thing down so that VR_Init can run again. Needed because an OpenXR instance is
+// bound to a single graphics API, so switching renderer means starting over.
+void VR_Shutdown();
+void VR_EnterVR( engine_t* engine, XrGraphicsBindingVulkanKHR* graphicsBindingVulkan );
 void VR_LeaveVR( engine_t* engine );
+
+// Vulkan interop (XR_KHR_vulkan_enable). These must all be called after VR_Init (we need an
+// XrInstance and an XrSystemId), but before the Vulkan instance/device are created - the OpenXR
+// runtime dictates which extensions and which physical device we have to use.
+void VR_GetVulkanInstanceExtensions(std::vector<std::string>* extensions);
+void VR_GetVulkanDeviceExtensions(std::vector<std::string>* extensions);
+VkPhysicalDevice VR_GetVulkanPhysicalDevice(VkInstance instance);
 
 engine_t* VR_GetEngine( void );
 bool VR_GetPlatformFlag(VRPlatformFlag flag);

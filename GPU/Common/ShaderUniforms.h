@@ -42,10 +42,14 @@ struct alignas(16) UB_VS_FS_Base {
 	float texClamp[4];
 	float blendFixA[3]; float stencilReplaceValue;
 	float blendFixB[3]; float rotation;
-	// VR stuff is to go here, later. For normal drawing, we can then get away
-	// with just uploading the first X bytes of the struct (up to and including fogCoef).
+	// VR stuff. Only written when GPU_USE_VIRTUAL_REALITY is on, but always part of the layout -
+	// the shaders are generated from a fixed description of this struct (ub_baseStr).
+	// For normal drawing, we can get away with just uploading the first X bytes of the struct
+	// (up to and including fogCoef).
+	float projLens[16];
+	float scaleX; float scaleY; float padding5[2];
 };
-static_assert(sizeof(UB_VS_FS_Base) <= 432, "UB_VS_FS_Base should be 432 bytes");
+static_assert(sizeof(UB_VS_FS_Base) <= 512, "UB_VS_FS_Base should be 512 bytes");
 
 static const char * const ub_baseStr =
 R"(  mat4 u_proj;
@@ -69,6 +73,8 @@ R"(  mat4 u_proj;
   vec4 u_texclamp;
   vec3 u_blendFixA; float u_stencilReplaceValue;
   vec3 u_blendFixB; float u_rotation;
+  mat4 u_proj_lens;
+  float u_scaleX; float u_scaleY; float pad3; float pad4;
 )";
 
 // 512 bytes. Would like to shrink more. Some colors only have 8-bit precision and we expand
@@ -103,6 +109,10 @@ R"(  vec4 u_ambient;
   vec3 u_lightdiffuse[4];
   vec3 u_lightspecular[4];
 )";
+
+// Heuristic for whether the current draw is a 2D HUD element that should be scaled down in VR so
+// that it stays inside the field of view. Shared by the GL and Vulkan shader managers.
+bool GuessVRDrawingHUD(bool is2D, bool flatScreen);
 
 // useBufferedRendering is only used to determine the rotation uniform.
 void BaseUpdateUniforms(UB_VS_FS_Base *ub, uint64_t dirtyUniforms, bool useBufferedRendering, bool pixelMapped);

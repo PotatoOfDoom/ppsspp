@@ -570,6 +570,7 @@
     <ClInclude Include="UI\ViewGroup.h" />
     <ClInclude Include="VR\OpenXRLoader.h" />
     <ClInclude Include="VR\PPSSPPVR.h" />
+    <ClInclude Include="VR\PPSSPPVRVulkan.h" />
     <ClInclude Include="VR\VRBase.h" />
     <ClInclude Include="VR\VRFramebuffer.h" />
     <ClInclude Include="VR\VRInput.h" />

@@ -27,6 +27,7 @@
 #include "Common/StringUtils.h"
 #include "Common/Data/Text/StringWriter.h"
 
+#include "Common/VR/PPSSPPVR.h"
 #include "Core/Config.h"
 #include "Core/Reporting.h"
 #include "Core/System.h"
@@ -233,6 +234,12 @@ u32 GPU_Vulkan::CheckGPUFeatures() const {
 	}
 
 	features |= GPU_USE_FRAMEBUFFER_ARRAYS;
+
+	if (IsVREnabled() || g_Config.bForceVR) {
+		features |= GPU_USE_VIRTUAL_REALITY;
+		features &= ~GPU_USE_VS_RANGE_CULLING;
+	}
+
 	return CheckGPUFeaturesLate(features);
 }
 

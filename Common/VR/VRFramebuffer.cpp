@@ -20,6 +20,7 @@
 #include <cmath>
 #include <ctime>
 #include <cassert>
+#include <vector>
 
 #if !defined(_WIN32)
 #include <pthread.h>
@@ -47,6 +48,7 @@ void ovrFramebuffer_Clear(ovrFramebuffer* frameBuffer) {
 	frameBuffer->ColorSwapChain.Width = 0;
 	frameBuffer->ColorSwapChain.Height = 0;
 	frameBuffer->ColorSwapChainImage = NULL;
+	frameBuffer->ColorFormat = 0;
 
 	frameBuffer->GLDepthBuffers = NULL;
 	frameBuffer->GLFrameBuffers = NULL;
@@ -107,6 +109,7 @@ static bool ovrFramebuffer_CreateGL(XrSession session, ovrFramebuffer* frameBuff
 
 	// Create the color swapchain.
 	swapChainCreateInfo.format = GL_SRGB8_ALPHA8;
+	frameBuffer->ColorFormat = swapChainCreateInfo.format;
 	swapChainCreateInfo.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
 	OXR(xrCreateSwapchain(session, &swapChainCreateInfo, &frameBuffer->ColorSwapChain.Handle));
 	OXR(xrEnumerateSwapchainImages(frameBuffer->ColorSwapChain.Handle, 0, &frameBuffer->TextureSwapChainLength, NULL));
@@ -153,12 +156,132 @@ static bool ovrFramebuffer_CreateGL(XrSession session, ovrFramebuffer* frameBuff
 
 #endif
 
+#if XR_USE_GRAPHICS_API_VULKAN
+
+// In preference order. We deliberately prefer the UNORM formats: PPSSPP's presentation pass writes
+// values that are already gamma-encoded, so letting the hardware apply the sRGB transfer function
+// on top would wash the image out.
+static const VkFormat vkPreferredFormats[] = {
+	VK_FORMAT_R8G8B8A8_UNORM,
+	VK_FORMAT_B8G8R8A8_UNORM,
+	VK_FORMAT_R8G8B8A8_SRGB,
+	VK_FORMAT_B8G8R8A8_SRGB,
+};
+
+static VkFormat vkChosenFormat = VK_FORMAT_UNDEFINED;
+
+VkFormat ovrFramebuffer_ChooseVulkanFormat(XrSession session) {
+	if (vkChosenFormat != VK_FORMAT_UNDEFINED) {
+		return vkChosenFormat;
+	}
+	if (session == XR_NULL_HANDLE) {
+		// No session yet, so we can't ask. The caller has to try again later.
+		return VK_FORMAT_UNDEFINED;
+	}
+
+	uint32_t formatCount = 0;
+	if (XR_FAILED(xrEnumerateSwapchainFormats(session, 0, &formatCount, NULL)) || !formatCount) {
+		return VK_FORMAT_UNDEFINED;
+	}
+	std::vector<int64_t> formats(formatCount);
+	if (XR_FAILED(xrEnumerateSwapchainFormats(session, formatCount, &formatCount, formats.data()))) {
+		return VK_FORMAT_UNDEFINED;
+	}
+
+	for (VkFormat preferred : vkPreferredFormats) {
+		for (uint32_t i = 0; i < formatCount; i++) {
+			if (formats[i] == (int64_t)preferred) {
+				vkChosenFormat = preferred;
+				ALOGV("OpenXR: Using Vulkan swapchain format %d", (int)vkChosenFormat);
+				return vkChosenFormat;
+			}
+		}
+	}
+
+	// Nothing we recognize - take the runtime's first choice, which is its most preferred one.
+	vkChosenFormat = (VkFormat)formats[0];
+	ALOGE("OpenXR: No preferred Vulkan swapchain format supported, falling back to %d", (int)vkChosenFormat);
+	return vkChosenFormat;
+}
+
+// Unlike the GL path, we don't build any Vulkan objects here - we only own the OpenXR swapchain
+// and hand the images over. VulkanQueueRunner creates the views and framebuffers for them, using
+// the same render pass it uses for the real backbuffer so that pipelines stay compatible.
+static bool ovrFramebuffer_CreateVK(XrSession session, ovrFramebuffer* frameBuffer, int width, int height) {
+	frameBuffer->Width = width;
+	frameBuffer->Height = height;
+
+	VkFormat format = ovrFramebuffer_ChooseVulkanFormat(session);
+	if (format == VK_FORMAT_UNDEFINED) {
+		ALOGE("OpenXR: No usable Vulkan swapchain format");
+		return false;
+	}
+
+	XrSwapchainCreateInfo swapChainCreateInfo;
+	memset(&swapChainCreateInfo, 0, sizeof(swapChainCreateInfo));
+	swapChainCreateInfo.type = XR_TYPE_SWAPCHAIN_CREATE_INFO;
+	swapChainCreateInfo.sampleCount = 1;
+	swapChainCreateInfo.width = width;
+	swapChainCreateInfo.height = height;
+	swapChainCreateInfo.faceCount = 1;
+	swapChainCreateInfo.mipCount = 1;
+	swapChainCreateInfo.arraySize = 1;
+	swapChainCreateInfo.format = format;
+	swapChainCreateInfo.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
+
+	frameBuffer->ColorFormat = format;
+	frameBuffer->ColorSwapChain.Width = swapChainCreateInfo.width;
+	frameBuffer->ColorSwapChain.Height = swapChainCreateInfo.height;
+
+	OXR(xrCreateSwapchain(session, &swapChainCreateInfo, &frameBuffer->ColorSwapChain.Handle));
+	if (frameBuffer->ColorSwapChain.Handle == XR_NULL_HANDLE) {
+		ALOGE("OpenXR: Failed to create the Vulkan swapchain");
+		return false;
+	}
+	OXR(xrEnumerateSwapchainImages(frameBuffer->ColorSwapChain.Handle, 0, &frameBuffer->TextureSwapChainLength, NULL));
+	frameBuffer->ColorSwapChainImage = malloc(frameBuffer->TextureSwapChainLength * sizeof(XrSwapchainImageVulkanKHR));
+
+	// Populate the swapchain image array.
+	for (uint32_t i = 0; i < frameBuffer->TextureSwapChainLength; i++) {
+		((XrSwapchainImageVulkanKHR*)frameBuffer->ColorSwapChainImage)[i].type = XR_TYPE_SWAPCHAIN_IMAGE_VULKAN_KHR;
+		((XrSwapchainImageVulkanKHR*)frameBuffer->ColorSwapChainImage)[i].next = NULL;
+	}
+	OXR(xrEnumerateSwapchainImages(
+			frameBuffer->ColorSwapChain.Handle,
+			frameBuffer->TextureSwapChainLength,
+			&frameBuffer->TextureSwapChainLength,
+			(XrSwapchainImageBaseHeader*)frameBuffer->ColorSwapChainImage));
+
+	return true;
+}
+
+VkImage ovrFramebuffer_GetVulkanImage(ovrFramebuffer* frameBuffer, uint32_t index) {
+	if (!frameBuffer->ColorSwapChainImage || index >= frameBuffer->TextureSwapChainLength) {
+		return VK_NULL_HANDLE;
+	}
+	return ((XrSwapchainImageVulkanKHR*)frameBuffer->ColorSwapChainImage)[index].image;
+}
+
+#else
+
+VkFormat ovrFramebuffer_ChooseVulkanFormat(XrSession session) {
+	return VK_FORMAT_UNDEFINED;
+}
+
+VkImage ovrFramebuffer_GetVulkanImage(ovrFramebuffer* frameBuffer, uint32_t index) {
+	return VK_NULL_HANDLE;
+}
+
+#endif
+
 void ovrFramebuffer_Destroy(ovrFramebuffer* frameBuffer) {
 #if XR_USE_GRAPHICS_API_OPENGL_ES || XR_USE_GRAPHICS_API_OPENGL
-	GL(glDeleteRenderbuffers(frameBuffer->TextureSwapChainLength, frameBuffer->GLDepthBuffers));
-	GL(glDeleteFramebuffers(frameBuffer->TextureSwapChainLength, frameBuffer->GLFrameBuffers));
-	free(frameBuffer->GLDepthBuffers);
-	free(frameBuffer->GLFrameBuffers);
+	if (!VR_GetPlatformFlag(VR_PLATFORM_RENDERER_VULKAN)) {
+		GL(glDeleteRenderbuffers(frameBuffer->TextureSwapChainLength, frameBuffer->GLDepthBuffers));
+		GL(glDeleteFramebuffers(frameBuffer->TextureSwapChainLength, frameBuffer->GLFrameBuffers));
+		free(frameBuffer->GLDepthBuffers);
+		free(frameBuffer->GLFrameBuffers);
+	}
 #endif
 	OXR(xrDestroySwapchain(frameBuffer->ColorSwapChain.Handle));
 	free(frameBuffer->ColorSwapChainImage);
@@ -167,8 +290,12 @@ void ovrFramebuffer_Destroy(ovrFramebuffer* frameBuffer) {
 }
 
 void* ovrFramebuffer_SetCurrent(ovrFramebuffer* frameBuffer) {
+	// On Vulkan there's nothing to bind here - the queue runner picks the framebuffer to render
+	// into from the current eye/image index when it starts the backbuffer render pass.
 #if XR_USE_GRAPHICS_API_OPENGL_ES || XR_USE_GRAPHICS_API_OPENGL
-	GL(glBindFramebuffer(GL_DRAW_FRAMEBUFFER, frameBuffer->GLFrameBuffers[frameBuffer->TextureSwapChainIndex]));
+	if (!VR_GetPlatformFlag(VR_PLATFORM_RENDERER_VULKAN)) {
+		GL(glBindFramebuffer(GL_DRAW_FRAMEBUFFER, frameBuffer->GLFrameBuffers[frameBuffer->TextureSwapChainIndex]));
+	}
 #endif
 	return nullptr;
 }
@@ -186,14 +313,17 @@ void ovrFramebuffer_Acquire(ovrFramebuffer* frameBuffer) {
 
 	ovrFramebuffer_SetCurrent(frameBuffer);
 
+	// On Vulkan the backbuffer render pass always clears, so there's nothing to do here.
 #if XR_USE_GRAPHICS_API_OPENGL_ES || XR_USE_GRAPHICS_API_OPENGL
-	GL(glEnable( GL_SCISSOR_TEST ));
-	GL(glViewport( 0, 0, frameBuffer->Width, frameBuffer->Height ));
-	GL(glClearColor( 0.0f, 0.0f, 0.0f, 1.0f ));
-	GL(glScissor( 0, 0, frameBuffer->Width, frameBuffer->Height ));
-	GL(glClear( GL_COLOR_BUFFER_BIT ));
-	GL(glScissor( 0, 0, 0, 0 ));
-	GL(glDisable( GL_SCISSOR_TEST ));
+	if (!VR_GetPlatformFlag(VR_PLATFORM_RENDERER_VULKAN)) {
+		GL(glEnable( GL_SCISSOR_TEST ));
+		GL(glViewport( 0, 0, frameBuffer->Width, frameBuffer->Height ));
+		GL(glClearColor( 0.0f, 0.0f, 0.0f, 1.0f ));
+		GL(glScissor( 0, 0, frameBuffer->Width, frameBuffer->Height ));
+		GL(glClear( GL_COLOR_BUFFER_BIT ));
+		GL(glScissor( 0, 0, 0, 0 ));
+		GL(glDisable( GL_SCISSOR_TEST ));
+	}
 #endif
 }
 
@@ -203,12 +333,17 @@ void ovrFramebuffer_Release(ovrFramebuffer* frameBuffer) {
 		OXR(xrReleaseSwapchainImage(frameBuffer->ColorSwapChain.Handle, &releaseInfo));
 		frameBuffer->Acquired = false;
 
-		// Clear the alpha channel, other way OpenXR would not transfer the framebuffer fully
+		// Clear the alpha channel, other way OpenXR would not transfer the framebuffer fully.
+		// Vulkan has no equivalent of a channel-masked clear outside a render pass, so there we
+		// instead tell the compositor that the layer is opaque (see VR_FinishFrame), which has
+		// the same effect for free.
 #if XR_USE_GRAPHICS_API_OPENGL_ES || XR_USE_GRAPHICS_API_OPENGL
-		GL(glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_TRUE));
-		GL(glClearColor(0.0f, 0.0f, 0.0f, 1.0f));
-		GL(glClear(GL_COLOR_BUFFER_BIT));
-		GL(glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE));
+		if (!VR_GetPlatformFlag(VR_PLATFORM_RENDERER_VULKAN)) {
+			GL(glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_TRUE));
+			GL(glClearColor(0.0f, 0.0f, 0.0f, 1.0f));
+			GL(glClear(GL_COLOR_BUFFER_BIT));
+			GL(glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE));
+		}
 #endif
 	}
 }
@@ -229,9 +364,15 @@ void ovrRenderer_Clear(ovrRenderer* renderer) {
 
 void ovrRenderer_Create(XrSession session, ovrRenderer* renderer, int width, int height) {
 	for (int i = 0; i < ovrMaxNumEyes; i++) {
-#if XR_USE_GRAPHICS_API_OPENGL_ES || XR_USE_GRAPHICS_API_OPENGL
-		ovrFramebuffer_CreateGL(session, &renderer->FrameBuffer[i], width, height);
+		if (VR_GetPlatformFlag(VR_PLATFORM_RENDERER_VULKAN)) {
+#if XR_USE_GRAPHICS_API_VULKAN
+			ovrFramebuffer_CreateVK(session, &renderer->FrameBuffer[i], width, height);
 #endif
+		} else {
+#if XR_USE_GRAPHICS_API_OPENGL_ES || XR_USE_GRAPHICS_API_OPENGL
+			ovrFramebuffer_CreateGL(session, &renderer->FrameBuffer[i], width, height);
+#endif
+		}
 	}
 }
 
@@ -242,13 +383,17 @@ void ovrRenderer_Destroy(ovrRenderer* renderer) {
 }
 
 void ovrRenderer_MouseCursor(ovrRenderer* renderer, int x, int y, int sx, int sy) {
+	// The Vulkan path draws the cursor from inside the backbuffer render pass instead, see
+	// GetVRVulkanCursorRect() - clears outside a render pass aren't a thing there.
 #if XR_USE_GRAPHICS_API_OPENGL_ES || XR_USE_GRAPHICS_API_OPENGL
-	GL(glEnable(GL_SCISSOR_TEST));
-	GL(glScissor(x, y, sx, sy));
-	GL(glViewport(x, y, sx, sy));
-	GL(glClearColor(1.0f, 1.0f, 1.0f, 1.0f));
-	GL(glClear(GL_COLOR_BUFFER_BIT));
-	GL(glDisable(GL_SCISSOR_TEST));
+	if (!VR_GetPlatformFlag(VR_PLATFORM_RENDERER_VULKAN)) {
+		GL(glEnable(GL_SCISSOR_TEST));
+		GL(glScissor(x, y, sx, sy));
+		GL(glViewport(x, y, sx, sy));
+		GL(glClearColor(1.0f, 1.0f, 1.0f, 1.0f));
+		GL(glClear(GL_COLOR_BUFFER_BIT));
+		GL(glDisable(GL_SCISSOR_TEST));
+	}
 #endif
 }
 

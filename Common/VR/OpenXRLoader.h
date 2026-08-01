@@ -1,9 +1,20 @@
 #pragma once
 
+// Vulkan. We use our own dynamic loader headers rather than the system ones, so that a
+// Vulkan loader isn't required at link time just because the VR code is compiled in.
+// Note that only the function pointers live in namespace PPSSPP_VK - the types are global,
+// which is all that openxr_platform.h needs.
+#ifdef VK_USE_NATIVE_LIB
+#include <vulkan/vulkan.h>
+#else
+#include "Common/GPU/Vulkan/VulkanLoader.h"
+#endif
+
 #ifdef ANDROID
 #include <jni.h>
 #define XR_USE_PLATFORM_ANDROID 1
 #define XR_USE_GRAPHICS_API_OPENGL_ES 1
+#define XR_USE_GRAPHICS_API_VULKAN 1
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 
@@ -25,10 +36,11 @@
 #define XR_USE_PLATFORM_WIN32 1
 #endif
 #endif
-#include "Common/VR/OpenXRLoader.h"
+#define XR_USE_GRAPHICS_API_VULKAN 1
 #include <unknwn.h>
 #define XR_NO_PROTOTYPES 1
 #else
+#define XR_USE_GRAPHICS_API_VULKAN 1
 #define XR_NO_PROTOTYPES 1
 #endif
 

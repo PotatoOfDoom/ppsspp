@@ -1,13 +1,17 @@
 #include "Common/VR/PPSSPPVR.h"
+#include "Common/VR/PPSSPPVRVulkan.h"
 
 #include "Common/VR/VRBase.h"
 #if XR_USE_GRAPHICS_API_OPENGL || XR_USE_GRAPHICS_API_OPENGL_ES
 #include "Common/GPU/OpenGL/GLRenderManager.h"
 #endif
 
+#include "Common/VR/VRFramebuffer.h"
 #include "Common/VR/VRInput.h"
 #include "Common/VR/VRMath.h"
 #include "Common/VR/VRRenderer.h"
+
+#include "Common/GPU/Vulkan/VulkanContext.h"
 
 #include "Common/Input/InputState.h"
 #include "Common/Input/KeyCodes.h"
@@ -139,6 +143,10 @@ bool IsVREnabled() {
 #if PPSSPP_PLATFORM(ANDROID)
 void InitVROnAndroid(void* vm, void* activity, const char* system, int version, const char* name) {
 
+	// May be called again if we had to fall back to a different graphics backend - the OpenXR
+	// instance is bound to one graphics API, so we have to start over in that case.
+	VR_Shutdown();
+
 	//Get device vendor (uppercase)
 	char vendor[64];
 	sscanf(system, "%[^:]", vendor);
@@ -166,6 +174,8 @@ void InitVROnAndroid(void* vm, void* activity, const char* system, int version, 
 		VR_SetPlatformFLag(VR_PLATFORM_EXTENSION_PERFORMANCE, true);
 		VR_SetConfigFloat(VR_CONFIG_VIEWPORT_SUPERSAMPLING, 1.3f);
 	}
+	// This has to be decided before VR_Init, since it determines which OpenXR extension we ask for.
+	VR_SetPlatformFLag(VR_PLATFORM_RENDERER_VULKAN, (GPUBackend)g_Config.iGPUBackend == GPUBackend::VULKAN);
 
 	//Init VR
 	ovrJava java;
@@ -175,10 +185,28 @@ void InitVROnAndroid(void* vm, void* activity, const char* system, int version, 
 }
 #endif
 
-void EnterVR(bool firstStart) {
+void EnterVR(bool firstStart, void* vulkanContext) {
 	if (firstStart) {
 		engine_t* engine = VR_GetEngine();
-		VR_EnterVR(engine);
+		if (VR_GetPlatformFlag(VR_PLATFORM_RENDERER_VULKAN)) {
+			auto* context = (VulkanContext*)vulkanContext;
+			_dbg_assert_(context != nullptr);
+			engine->graphicsBindingVulkan = {};
+			engine->graphicsBindingVulkan.type = XR_TYPE_GRAPHICS_BINDING_VULKAN_KHR;
+			engine->graphicsBindingVulkan.next = NULL;
+			engine->graphicsBindingVulkan.device = context->GetDevice();
+			engine->graphicsBindingVulkan.instance = context->GetInstance();
+			engine->graphicsBindingVulkan.physicalDevice = context->GetCurrentPhysicalDevice();
+			engine->graphicsBindingVulkan.queueFamilyIndex = context->GetGraphicsQueueFamilyIndex();
+			engine->graphicsBindingVulkan.queueIndex = 0;
+			VR_EnterVR(engine, &engine->graphicsBindingVulkan);
+
+			// Decide on the swapchain format right away - the backbuffer render pass, which is
+			// created before we ever get to render a VR frame, needs to know it.
+			ovrFramebuffer_ChooseVulkanFormat(engine->appState.Session);
+		} else {
+			VR_EnterVR(engine, nullptr);
+		}
 		IN_VRInit(engine);
 	}
 	VR_SetConfig(VR_CONFIG_VIEWPORT_VALID, false);
@@ -606,8 +634,103 @@ int GetVRFBOIndex() {
 }
 
 int GetVRPassesCount() {
+	if (IsVRVulkanRenderer()) {
+		// The two-pass stereo mode replays the recorded frame once per eye with a different view
+		// matrix. On OpenGL the matrix is a plain uniform that the queue runner can substitute per
+		// pass (see GLRRenderCommand::UNIFORMSTEREOMATRIX); on Vulkan it lives in a uniform buffer
+		// that was already filled in when the draws were recorded, so a second pass would just
+		// render the exact same image again at twice the cost. Stay mono until the view matrix can
+		// be selected per pass (multiview is the natural way to do that).
+		return 1;
+	}
 	bool vrStereo = !PSP_CoreParameter().compat.vrCompat().ForceMono && g_Config.bEnableStereo;
 	return vrStereo ? 2 : 1;
+}
+
+/*
+================================================================================
+
+Vulkan rendering integration
+
+================================================================================
+*/
+
+bool IsVRVulkanRenderer() {
+	return IsVREnabled() && VR_GetPlatformFlag(VR_PLATFORM_RENDERER_VULKAN);
+}
+
+void GetVRVulkanInstanceExtensions(std::vector<std::string> *extensions) {
+	VR_GetVulkanInstanceExtensions(extensions);
+}
+
+void GetVRVulkanDeviceExtensions(std::vector<std::string> *extensions) {
+	VR_GetVulkanDeviceExtensions(extensions);
+}
+
+VkPhysicalDevice GetVRVulkanPhysicalDevice(VkInstance instance) {
+	return VR_GetVulkanPhysicalDevice(instance);
+}
+
+VkFormat GetVRVulkanSwapchainFormat() {
+	return ovrFramebuffer_ChooseVulkanFormat(VR_GetEngine()->appState.Session);
+}
+
+bool GetVRVulkanSwapchainDesc(VRVulkanSwapchainDesc *desc) {
+	if (!IsVRVulkanRenderer() || !VR_GetConfig(VR_CONFIG_VIEWPORT_VALID)) {
+		return false;
+	}
+	const ovrFramebuffer *fb = &VR_GetEngine()->appState.Renderer.FrameBuffer[0];
+	if (!fb->TextureSwapChainLength) {
+		return false;
+	}
+	desc->width = fb->Width;
+	desc->height = fb->Height;
+	desc->imageCount = fb->TextureSwapChainLength;
+	desc->format = (VkFormat)fb->ColorFormat;
+	return true;
+}
+
+VkImage GetVRVulkanSwapchainImage(int eye, uint32_t index) {
+	if (eye < 0 || eye >= ovrMaxNumEyes) {
+		return VK_NULL_HANDLE;
+	}
+	return ovrFramebuffer_GetVulkanImage(&VR_GetEngine()->appState.Renderer.FrameBuffer[eye], index);
+}
+
+int GetVRVulkanCurrentEye() {
+	return VR_GetConfig(VR_CONFIG_CURRENT_FBO);
+}
+
+bool GetVRVulkanBackbufferSize(int *width, int *height) {
+	if (!IsVRVulkanRenderer() || !VR_GetConfig(VR_CONFIG_VIEWPORT_VALID)) {
+		return false;
+	}
+	*width = VR_GetConfig(VR_CONFIG_VIEWPORT_WIDTH);
+	*height = VR_GetConfig(VR_CONFIG_VIEWPORT_HEIGHT);
+	return *width > 0 && *height > 0;
+}
+
+uint32_t GetVRVulkanCurrentImageIndex() {
+	return VR_GetEngine()->appState.Renderer.FrameBuffer[GetVRVulkanCurrentEye()].TextureSwapChainIndex;
+}
+
+bool IsVRVulkanImageAcquired() {
+	return VR_GetEngine()->appState.Renderer.FrameBuffer[GetVRVulkanCurrentEye()].Acquired;
+}
+
+bool GetVRVulkanCursorRect(int *x, int *y, int *w, int *h) {
+	int vrMode = VR_GetConfig(VR_CONFIG_MODE);
+	bool screenMode = (vrMode == VR_MODE_MONO_SCREEN) || (vrMode == VR_MODE_STEREO_SCREEN);
+	int size = VR_GetConfig(VR_CONFIG_MOUSE_SIZE);
+	if (!screenMode || size <= 0) {
+		return false;
+	}
+	*w = size;
+	*h = (int)((float)size * VR_GetConfigFloat(VR_CONFIG_CANVAS_ASPECT));
+	*x = VR_GetConfig(VR_CONFIG_MOUSE_X);
+	// VR_CONFIG_MOUSE_Y is in OpenGL's bottom-up convention, Vulkan wants top-down.
+	*y = VR_GetConfig(VR_CONFIG_VIEWPORT_HEIGHT) - VR_GetConfig(VR_CONFIG_MOUSE_Y) - *h;
+	return true;
 }
 
 bool IsPassthroughSupported() {

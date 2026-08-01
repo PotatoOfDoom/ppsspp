@@ -11,6 +11,7 @@ set(CommonVR
 	VR/OpenXRLoader.h
 	VR/PPSSPPVR.cpp
 	VR/PPSSPPVR.h
+	VR/PPSSPPVRVulkan.h
 	VR/VRBase.cpp
 	VR/VRBase.h
 	VR/VRFramebuffer.cpp

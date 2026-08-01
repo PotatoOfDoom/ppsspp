@@ -60,6 +60,7 @@
 #include "Common/GPU/thin3d_create.h"
 #include "Common/GPU/Vulkan/VulkanRenderManager.h"
 #include "Common/GPU/Vulkan/VulkanGraphicsContext.h"
+#include "Common/VR/PPSSPPVRVulkan.h"
 #include "Common/Data/Text/Parsers.h"
 #include "GPU/Vulkan/VulkanUtil.h"
 
@@ -101,11 +102,16 @@ bool VulkanGraphicsContext::InitAPI(void *wnd, std::string *deviceName, std::str
 		vulkan_ = nullptr;
 		return false;
 	}
-	int deviceNum = vulkan_->GetPhysicalDeviceByName(*deviceName);
+	// In VR the OpenXR runtime picks the device for us, and overriding it just means the headset
+	// won't see anything we render. Don't touch the configured device name in that case.
+	int deviceNum = vulkan_->GetVRPhysicalDevice();
 	if (deviceNum < 0) {
-		deviceNum = vulkan_->GetBestPhysicalDevice();
-		if (!deviceName->empty()) {
-			*deviceName = vulkan_->GetPhysicalDeviceProperties(deviceNum).properties.deviceName;
+		deviceNum = vulkan_->GetPhysicalDeviceByName(*deviceName);
+		if (deviceNum < 0) {
+			deviceNum = vulkan_->GetBestPhysicalDevice();
+			if (!deviceName->empty()) {
+				*deviceName = vulkan_->GetPhysicalDeviceProperties(deviceNum).properties.deviceName;
+			}
 		}
 	}
 
@@ -123,6 +129,12 @@ bool VulkanGraphicsContext::InitSurface(WindowSystem winsys, void *data1, void *
 
 	bool useMultiThreading = g_Config.bRenderMultiThreading;
 	if (g_Config.iInflightFrames == 1) {
+		useMultiThreading = false;
+	}
+	if (IsVRVulkanRenderer()) {
+		// xrBeginFrame/xrEndFrame have to be strictly paired, and the pose we hand OpenXR has to be
+		// the one the frame was actually rendered with. With a separate render thread the two ends
+		// of the frame live on different threads and drift apart by a frame, so keep it synchronous.
 		useMultiThreading = false;
 	}
 
@@ -148,7 +160,9 @@ bool VulkanGraphicsContext::InitSurface(WindowSystem winsys, void *data1, void *
 
 	renderManager_ = (VulkanRenderManager *)draw_->GetNativeObject(Draw::NativeObject::RENDER_MANAGER);
 	renderManager_->SetInflightFrames(g_Config.iInflightFrames);
-	if (!renderManager_->HasBackbuffers()) {
+	// In VR we deliberately don't build backbuffer framebuffers - we render to the OpenXR
+	// swapchains instead, and those don't exist yet at this point.
+	if (!renderManager_->HasBackbuffers() && !IsVRVulkanRenderer()) {
 		// WTF?
 		_dbg_assert_(false);
 		return false;

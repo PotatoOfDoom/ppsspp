@@ -1,6 +1,7 @@
 #include "Common/StringUtils.h"
 #include "Common/GPU/Vulkan/VulkanFramebuffer.h"
 #include "Common/GPU/Vulkan/VulkanQueueRunner.h"
+#include "Common/VR/PPSSPPVRVulkan.h"
 
 static const char * const rpTypeDebugNames[] = {
 	"RENDER",
@@ -311,19 +312,26 @@ VkRenderPass CreateRenderPass(VulkanContext *vulkan, const RPKey &key, RenderPas
 		// TODO: Assert that the device has multiview support enabled.
 	}
 
+	// In VR the "backbuffer" isn't the swapchain image we present - it's an OpenXR swapchain image
+	// that the runtime composites. That means a different format, and the runtime requires us to
+	// leave it in COLOR_ATTACHMENT_OPTIMAL rather than PRESENT_SRC_KHR.
+	const bool isVRBackbuffer = isBackbuffer && IsVRVulkanRenderer() && GetVRVulkanSwapchainFormat() != VK_FORMAT_UNDEFINED;
+	const VkFormat backbufferFormat = isVRBackbuffer ? GetVRVulkanSwapchainFormat() : vulkan->GetSwapchainFormat();
+	const VkImageLayout backbufferFinalLayout = isVRBackbuffer ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
 	int colorAttachmentIndex = 0;
 	int depthAttachmentIndex = 1;
 
 	int attachmentCount = 0;
 	VkAttachmentDescription attachments[4]{};
-	attachments[attachmentCount].format = isBackbuffer ? vulkan->GetSwapchainFormat() : VK_FORMAT_R8G8B8A8_UNORM;
+	attachments[attachmentCount].format = isBackbuffer ? backbufferFormat : VK_FORMAT_R8G8B8A8_UNORM;
 	attachments[attachmentCount].samples = VK_SAMPLE_COUNT_1_BIT;
 	attachments[attachmentCount].loadOp = multisample ? VK_ATTACHMENT_LOAD_OP_DONT_CARE : ConvertLoadAction(key.colorLoadAction);
 	attachments[attachmentCount].storeOp = ConvertStoreAction(key.colorStoreAction);
 	attachments[attachmentCount].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
 	attachments[attachmentCount].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
 	attachments[attachmentCount].initialLayout = isBackbuffer ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-	attachments[attachmentCount].finalLayout = isBackbuffer ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+	attachments[attachmentCount].finalLayout = isBackbuffer ? backbufferFinalLayout : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 	attachmentCount++;
 
 	if (hasDepth) {
@@ -340,14 +348,14 @@ VkRenderPass CreateRenderPass(VulkanContext *vulkan, const RPKey &key, RenderPas
 
 	if (multisample) {
 		colorAttachmentIndex = attachmentCount;
-		attachments[attachmentCount].format = isBackbuffer ? vulkan->GetSwapchainFormat() : VK_FORMAT_R8G8B8A8_UNORM;
+		attachments[attachmentCount].format = isBackbuffer ? backbufferFormat : VK_FORMAT_R8G8B8A8_UNORM;
 		attachments[attachmentCount].samples = sampleCount;
 		attachments[attachmentCount].loadOp = ConvertLoadAction(key.colorLoadAction);
 		attachments[attachmentCount].storeOp = ConvertStoreAction(key.colorStoreAction);
 		attachments[attachmentCount].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
 		attachments[attachmentCount].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
 		attachments[attachmentCount].initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-		attachments[attachmentCount].finalLayout = isBackbuffer ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+		attachments[attachmentCount].finalLayout = isBackbuffer ? backbufferFinalLayout : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 		attachmentCount++;
 
 		if (hasDepth) {

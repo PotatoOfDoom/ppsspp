@@ -166,6 +166,9 @@ public:
 
 	int GetBestPhysicalDevice() const;
 	int GetPhysicalDeviceByName(std::string_view name) const;
+	// In VR, the OpenXR runtime tells us which device it can composite from, and that's not
+	// negotiable. Returns -1 when not in VR or when the runtime doesn't care.
+	int GetVRPhysicalDevice() const;
 
 	// Convenience method to avoid code duplication.
 	// If it returns false, delete the context.
@@ -464,6 +467,11 @@ private:
 
 	std::vector<const char *> device_extensions_enabled_;
 	std::vector<VkExtensionProperties> device_extension_properties_;
+
+	// Backing storage for the extension names the OpenXR runtime requires - the *_enabled_ lists
+	// above only hold pointers, and these don't come from string literals.
+	std::vector<std::string> vrInstanceExtensions_;
+	std::vector<std::string> vrDeviceExtensions_;
 	VulkanExtensions extensionsLookup_{};
 
 	std::vector<VkPhysicalDevice> physical_devices_;

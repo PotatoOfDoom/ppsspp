@@ -40,9 +40,13 @@ void VR_Init( void* system, const char* name, int version ) {
 #endif
 
 	std::vector<const char *> extensions;
+	if (VR_GetPlatformFlag(VR_PLATFORM_RENDERER_VULKAN)) {
+		extensions.push_back(XR_KHR_VULKAN_ENABLE_EXTENSION_NAME);
+	} else {
 #ifdef XR_USE_GRAPHICS_API_OPENGL_ES
-	extensions.push_back(XR_KHR_OPENGL_ES_ENABLE_EXTENSION_NAME);
+		extensions.push_back(XR_KHR_OPENGL_ES_ENABLE_EXTENSION_NAME);
 #endif
+	}
 	extensions.push_back(XR_KHR_COMPOSITION_LAYER_CYLINDER_EXTENSION_NAME);
 #ifdef ANDROID
 	if (VR_GetPlatformFlag(VR_PLATFORM_EXTENSION_INSTANCE)) {
@@ -120,18 +124,40 @@ void VR_Init( void* system, const char* name, int version ) {
 		exit(1);
 	}
 
-	// Get the graphics requirements.
-#ifdef XR_USE_GRAPHICS_API_OPENGL_ES
-	PFN_xrGetOpenGLESGraphicsRequirementsKHR pfnGetOpenGLESGraphicsRequirementsKHR = NULL;
-	OXR(xrGetInstanceProcAddr(
-			vr_engine.appState.Instance,
-			"xrGetOpenGLESGraphicsRequirementsKHR",
-			(PFN_xrVoidFunction*)(&pfnGetOpenGLESGraphicsRequirementsKHR)));
+	// Get the graphics requirements. The runtime is allowed to fail session creation if we skip this,
+	// so it has to happen for whichever graphics API we're going to bind.
+	if (VR_GetPlatformFlag(VR_PLATFORM_RENDERER_VULKAN)) {
+		PFN_xrGetVulkanGraphicsRequirementsKHR pfnGetVulkanGraphicsRequirementsKHR = NULL;
+		OXR(xrGetInstanceProcAddr(
+				vr_engine.appState.Instance,
+				"xrGetVulkanGraphicsRequirementsKHR",
+				(PFN_xrVoidFunction*)(&pfnGetVulkanGraphicsRequirementsKHR)));
 
-	XrGraphicsRequirementsOpenGLESKHR graphicsRequirements = {};
-	graphicsRequirements.type = XR_TYPE_GRAPHICS_REQUIREMENTS_OPENGL_ES_KHR;
-	OXR(pfnGetOpenGLESGraphicsRequirementsKHR(vr_engine.appState.Instance, systemId, &graphicsRequirements));
+		XrGraphicsRequirementsVulkanKHR graphicsRequirements = {};
+		graphicsRequirements.type = XR_TYPE_GRAPHICS_REQUIREMENTS_VULKAN_KHR;
+		if (pfnGetVulkanGraphicsRequirementsKHR) {
+			OXR(pfnGetVulkanGraphicsRequirementsKHR(vr_engine.appState.Instance, systemId, &graphicsRequirements));
+			ALOGV("OpenXR Vulkan API version range: %u.%u.%u - %u.%u.%u",
+					XR_VERSION_MAJOR(graphicsRequirements.minApiVersionSupported),
+					XR_VERSION_MINOR(graphicsRequirements.minApiVersionSupported),
+					XR_VERSION_PATCH(graphicsRequirements.minApiVersionSupported),
+					XR_VERSION_MAJOR(graphicsRequirements.maxApiVersionSupported),
+					XR_VERSION_MINOR(graphicsRequirements.maxApiVersionSupported),
+					XR_VERSION_PATCH(graphicsRequirements.maxApiVersionSupported));
+		}
+	} else {
+#ifdef XR_USE_GRAPHICS_API_OPENGL_ES
+		PFN_xrGetOpenGLESGraphicsRequirementsKHR pfnGetOpenGLESGraphicsRequirementsKHR = NULL;
+		OXR(xrGetInstanceProcAddr(
+				vr_engine.appState.Instance,
+				"xrGetOpenGLESGraphicsRequirementsKHR",
+				(PFN_xrVoidFunction*)(&pfnGetOpenGLESGraphicsRequirementsKHR)));
+
+		XrGraphicsRequirementsOpenGLESKHR graphicsRequirements = {};
+		graphicsRequirements.type = XR_TYPE_GRAPHICS_REQUIREMENTS_OPENGL_ES_KHR;
+		OXR(pfnGetOpenGLESGraphicsRequirementsKHR(vr_engine.appState.Instance, systemId, &graphicsRequirements));
 #endif
+	}
 
 #ifdef ANDROID
 	vr_engine.appState.MainThreadTid = gettid();
@@ -147,7 +173,16 @@ void VR_Destroy( engine_t* engine ) {
 	}
 }
 
-void VR_EnterVR( engine_t* engine ) {
+void VR_Shutdown() {
+	if (!vr_initialized) {
+		return;
+	}
+	VR_LeaveVR(&vr_engine);
+	VR_Destroy(&vr_engine);
+	vr_initialized = 0;
+}
+
+void VR_EnterVR( engine_t* engine, XrGraphicsBindingVulkanKHR* graphicsBindingVulkan ) {
 
 	if (engine->appState.Session) {
 		ALOGE("VR_EnterVR called with existing session");
@@ -162,16 +197,20 @@ void VR_EnterVR( engine_t* engine ) {
 	XrGraphicsBindingOpenGLWin32KHR graphicsBindingGL = {};
 #endif
 	memset(&sessionCreateInfo, 0, sizeof(sessionCreateInfo));
+	if (VR_GetPlatformFlag(VR_PLATFORM_RENDERER_VULKAN)) {
+		sessionCreateInfo.next = graphicsBindingVulkan;
+	} else {
 #ifdef ANDROID
-	graphicsBindingGL.type = XR_TYPE_GRAPHICS_BINDING_OPENGL_ES_ANDROID_KHR;
-	graphicsBindingGL.next = NULL;
-	graphicsBindingGL.display = eglGetCurrentDisplay();
-	graphicsBindingGL.config = NULL;
-	graphicsBindingGL.context = eglGetCurrentContext();
-	sessionCreateInfo.next = &graphicsBindingGL;
+		graphicsBindingGL.type = XR_TYPE_GRAPHICS_BINDING_OPENGL_ES_ANDROID_KHR;
+		graphicsBindingGL.next = NULL;
+		graphicsBindingGL.display = eglGetCurrentDisplay();
+		graphicsBindingGL.config = NULL;
+		graphicsBindingGL.context = eglGetCurrentContext();
+		sessionCreateInfo.next = &graphicsBindingGL;
 #else
-	//TODO:PCVR definition
+		//TODO:PCVR definition
 #endif
+	}
 	sessionCreateInfo.type = XR_TYPE_SESSION_CREATE_INFO;
 	sessionCreateInfo.createFlags = 0;
 	sessionCreateInfo.systemId = engine->appState.SystemId;
@@ -203,6 +242,91 @@ void VR_LeaveVR( engine_t* engine ) {
 		OXR(xrDestroySession(engine->appState.Session));
 		engine->appState.Session = XR_NULL_HANDLE;
 	}
+}
+
+/*
+================================================================================
+
+Vulkan interop (XR_KHR_vulkan_enable)
+
+The runtime tells us which Vulkan instance/device extensions it needs and which physical device
+it's going to composite from. Ignoring any of this is what made the previous attempt at a Vulkan
+VR backend fail to produce an image, so all three are wired up here.
+
+================================================================================
+*/
+
+// The XR_KHR_vulkan_enable "get extensions" calls return one space-separated string, not a list.
+static void SplitExtensionString(const char* names, std::vector<std::string>* extensions) {
+	const char* start = names;
+	for (const char* p = names;; p++) {
+		if (*p == ' ' || *p == '\0') {
+			if (p > start) {
+				extensions->push_back(std::string(start, p - start));
+			}
+			if (*p == '\0') {
+				break;
+			}
+			start = p + 1;
+		}
+	}
+}
+
+static void VR_GetVulkanExtensions(bool device, std::vector<std::string>* extensions) {
+	if (!vr_initialized || !VR_GetPlatformFlag(VR_PLATFORM_RENDERER_VULKAN)) {
+		return;
+	}
+
+	// Both entry points have the same signature, so we can share the code.
+	PFN_xrGetVulkanInstanceExtensionsKHR pfnGetExtensions = NULL;
+	const char* name = device ? "xrGetVulkanDeviceExtensionsKHR" : "xrGetVulkanInstanceExtensionsKHR";
+	OXR(xrGetInstanceProcAddr(vr_engine.appState.Instance, name, (PFN_xrVoidFunction*)(&pfnGetExtensions)));
+	if (!pfnGetExtensions) {
+		ALOGE("OpenXR: %s not available", name);
+		return;
+	}
+
+	uint32_t size = 0;
+	if (XR_FAILED(pfnGetExtensions(vr_engine.appState.Instance, vr_engine.appState.SystemId, 0, &size, NULL)) || !size) {
+		return;
+	}
+
+	std::vector<char> names(size);
+	if (XR_FAILED(pfnGetExtensions(vr_engine.appState.Instance, vr_engine.appState.SystemId, size, &size, names.data()))) {
+		return;
+	}
+	names[size - 1] = '\0';  // Just in case - the runtime is supposed to null-terminate this.
+	SplitExtensionString(names.data(), extensions);
+}
+
+void VR_GetVulkanInstanceExtensions(std::vector<std::string>* extensions) {
+	VR_GetVulkanExtensions(false, extensions);
+}
+
+void VR_GetVulkanDeviceExtensions(std::vector<std::string>* extensions) {
+	VR_GetVulkanExtensions(true, extensions);
+}
+
+VkPhysicalDevice VR_GetVulkanPhysicalDevice(VkInstance instance) {
+	if (!vr_initialized || !VR_GetPlatformFlag(VR_PLATFORM_RENDERER_VULKAN)) {
+		return VK_NULL_HANDLE;
+	}
+
+	PFN_xrGetVulkanGraphicsDeviceKHR pfnGetVulkanGraphicsDeviceKHR = NULL;
+	OXR(xrGetInstanceProcAddr(
+			vr_engine.appState.Instance,
+			"xrGetVulkanGraphicsDeviceKHR",
+			(PFN_xrVoidFunction*)(&pfnGetVulkanGraphicsDeviceKHR)));
+	if (!pfnGetVulkanGraphicsDeviceKHR) {
+		ALOGE("OpenXR: xrGetVulkanGraphicsDeviceKHR not available");
+		return VK_NULL_HANDLE;
+	}
+
+	VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
+	if (XR_FAILED(pfnGetVulkanGraphicsDeviceKHR(vr_engine.appState.Instance, vr_engine.appState.SystemId, instance, &physicalDevice))) {
+		return VK_NULL_HANDLE;
+	}
+	return physicalDevice;
 }
 
 engine_t* VR_GetEngine( void ) {

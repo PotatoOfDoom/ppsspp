@@ -219,6 +219,12 @@ void ShaderManagerVulkan::ClearShaders() {
 
 uint64_t ShaderManagerVulkan::UpdateUniforms(bool useBufferedRendering, bool pixelMapped) {
 	uint64_t dirty = gstate_c.GetDirtyUniforms();
+	if (gstate_c.Use(GPU_USE_VIRTUAL_REALITY)) {
+		// The VR matrices depend on the head pose, and the HUD scale on per-draw render state, so
+		// none of them can be tracked with the usual dirty flags - they can change without the game
+		// touching anything. Just refresh the base uniforms for every draw while in VR.
+		dirty |= DIRTY_PROJMATRIX | DIRTY_VIEWMATRIX;
+	}
 	if (dirty != 0) {
 		if (dirty & DIRTY_BASE_UNIFORMS)
 			BaseUpdateUniforms(&uniforms_->ub_base, dirty, useBufferedRendering, pixelMapped);

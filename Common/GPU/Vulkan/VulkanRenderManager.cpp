@@ -12,7 +12,11 @@
 #include "Common/GPU/Vulkan/VulkanRenderManager.h"
 
 #include "Common/LogReporting.h"
+#include "Common/System/Display.h"
 #include "Common/Thread/ThreadUtil.h"
+#include "Common/VR/PPSSPPVR.h"
+#include "Common/VR/PPSSPPVRVulkan.h"
+#include "Core/Config.h"
 
 #if 0 // def _DEBUG
 #define VLOG(...) NOTICE_LOG(Log::G3D, __VA_ARGS__)
@@ -394,6 +398,14 @@ bool VulkanRenderManager::CreateSwapchainViewsAndDepth(VkCommandBuffer cmdInit, 
 		_dbg_assert_(res == VK_SUCCESS);
 	}
 	delete[] swapchainImages;
+
+	// In VR we never render to (or present) the window surface - the OpenXR swapchains take its
+	// place, and they have a different size and possibly a different format, so building the
+	// backbuffer framebuffers here would only create a render pass with the wrong format.
+	// The VR framebuffers are created lazily instead, once the OpenXR swapchains exist.
+	if (IsVRVulkanRenderer()) {
+		return true;
+	}
 
 	// Must be before InitBackbufferRenderPass.
 	if (queueRunner_.InitDepthStencilBuffer(cmdInit, barriers)) {
@@ -807,6 +819,12 @@ void VulkanRenderManager::BeginFrame(bool enableProfiling, bool enableLogProfile
 	// Must be after the fence - this performs deletes.
 	VLOG("PUSH: BeginFrame %d", curFrame);
 
+	// Start the OpenXR frame here, so the head pose it gives us is available to the game rendering
+	// that's about to be recorded. If the session isn't running (headset off, app in the background)
+	// this returns false and we simply don't produce a VR frame - the render steps will still be
+	// recorded, they just won't have anywhere to go.
+	vrFrameStarted_ = IsVRVulkanRenderer() && StartVRRender();
+
 	insideFrame_ = true;
 	vulkan_->BeginFrame(enableLogProfiler ? GetInitCmd() : VK_NULL_HANDLE);
 
@@ -1114,6 +1132,11 @@ void VulkanRenderManager::BindFramebufferAsRenderTarget(VKRFramebuffer *fb, VKRR
 		curHeightRaw_ = fb->height;
 		curWidth_ = fb->width;
 		curHeight_ = fb->height;
+	} else if (GetVRVulkanBackbufferSize(&curWidthRaw_, &curHeightRaw_)) {
+		// In VR the backbuffer is an OpenXR swapchain image, sized per eye. The compositor decides
+		// the display orientation, so there's never any rotation to compensate for here.
+		curWidth_ = curWidthRaw_;
+		curHeight_ = curHeightRaw_;
 	} else {
 		curWidthRaw_ = vulkan_->GetBackbufferWidth();
 		curHeightRaw_ = vulkan_->GetBackbufferHeight();
@@ -1572,6 +1595,14 @@ void VulkanRenderManager::Present() {
 		delete task;
 	}
 
+	if (vrFrameStarted_) {
+		// Hand the frame to the OpenXR compositor. Everything that renders into the swapchain
+		// images has been submitted and the images have been released by now (see Run()).
+		UpdateVRInput(g_Config.bHapticFeedback, g_display.dpi_scale_x, g_display.dpi_scale_y);
+		FinishVRRender();
+		vrFrameStarted_ = false;
+	}
+
 	vulkan_->EndFrame();
 	insideFrame_ = false;
 }
@@ -1583,7 +1614,8 @@ void VulkanRenderManager::Run(VKRRenderThreadTask &task) {
 	FrameData &frameData = frameData_[task.frame];
 
 	if (task.runType == VKRRunType::PRESENT) {
-		if (!frameData.skipSwap) {
+		// In VR the window surface is never rendered to, so there's nothing to present.
+		if (!frameData.skipSwap && !IsVRVulkanRenderer()) {
 			VkResult res = frameData.QueuePresent(vulkan_, frameDataShared_);
 			frameTimeHistory_[frameData.frameId].queuePresent = time_now_d();
 			if (res == VK_ERROR_OUT_OF_DATE_KHR) {
@@ -1605,7 +1637,8 @@ void VulkanRenderManager::Run(VKRRenderThreadTask &task) {
 			}
 		} else {
 			// We only get here if vkAcquireNextImage returned VK_ERROR_OUT_OF_DATE.
-			if (vulkan_->HasRealSwapchain()) {
+			// In VR we always skip the swap on purpose, so that's not a sign of anything being wrong.
+			if (vulkan_->HasRealSwapchain() && !IsVRVulkanRenderer()) {
 				outOfDateFrames_++;
 			}
 			frameData.skipSwap = false;
@@ -1614,6 +1647,12 @@ void VulkanRenderManager::Run(VKRRenderThreadTask &task) {
 	}
 
 	_dbg_assert_(!frameData.hasPresentCommands);
+
+	if (IsVRVulkanRenderer()) {
+		// Nothing in this frame will be presented through the window surface, so make sure the
+		// submit doesn't try to wait on or signal the swapchain semaphores.
+		frameData.skipSwap = true;
+	}
 
 	if (!frameTimeHistory_[frameData.frameId].firstSubmit) {
 		frameTimeHistory_[frameData.frameId].firstSubmit = time_now_d();
@@ -1643,6 +1682,16 @@ void VulkanRenderManager::Run(VKRRenderThreadTask &task) {
 	if (task.steps.empty() && !frameData.hasAcquired)
 		frameData.skipSwap = true;
 	//queueRunner_.LogSteps(stepsOnThread, false);
+
+	// In VR, the frame is rendered into an OpenXR swapchain image that we have to acquire before
+	// recording and release only after submitting. GetVRPassesCount() is always 1 on Vulkan (see
+	// the comment there) - one image, shown to both eyes by the compositor.
+	_dbg_assert_(!vrFrameStarted_ || GetVRPassesCount() == 1);
+	const bool vrPass = vrFrameStarted_ && task.runType == VKRRunType::SUBMIT;
+	if (vrPass) {
+		PreVRFrameRender(0);
+	}
+
 	queueRunner_.RunSteps(task.steps, task.frame, frameData, frameDataShared_);
 
 	switch (task.runType) {
@@ -1667,6 +1716,12 @@ void VulkanRenderManager::Run(VKRRenderThreadTask &task) {
 	default:
 		_dbg_assert_(false);
 		break;
+	}
+
+	// Release the swapchain image only now: OpenXR requires all work rendering into it to have been
+	// submitted to the queue first, and the submit happens in the switch above.
+	if (vrPass) {
+		PostVRFrameRender();
 	}
 
 	VLOG("PULL: Finished running frame %d", task.frame);

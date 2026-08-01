@@ -916,6 +916,9 @@
     <ClInclude Include="..\..\Common\VR\PPSSPPVR.h">
       <Filter>VR</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\Common\VR\PPSSPPVRVulkan.h">
+      <Filter>VR</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\Common\VR\VRBase.h">
       <Filter>VR</Filter>
     </ClInclude>

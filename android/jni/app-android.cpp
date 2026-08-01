@@ -775,6 +775,17 @@ extern "C" void Java_org_ppsspp_ppsspp_NativeApp_init
 	// No need to use EARLY_LOG anymore.
 
 retry:
+	// This has to happen before the graphics context is created: with the Vulkan backend, the
+	// OpenXR runtime decides which instance/device extensions and which physical device we have to
+	// use, and we can only ask it once the XrInstance exists. It also means the OpenXR instance is
+	// tied to one graphics API, so if we fall back to another backend below we come back through
+	// here and re-initialize VR for it.
+	if (IsVREnabled()) {
+		Version gitVer(PPSSPP_GIT_VERSION);
+		InitVROnAndroid(gJvm, ppssppActivity, systemName.c_str(), gitVer.ToInteger(), "PPSSPP");
+		SetVRCallbacks(NativeAxis, NativeKey, NativeTouch);
+	}
+
 	switch (g_Config.iGPUBackend) {
 	case (int)GPUBackend::OPENGL:
 		INFO_LOG(Log::System, "NativeApp.init() -- creating OpenGL context (JavaGL)");
@@ -803,12 +814,6 @@ retry:
 		ERROR_LOG(Log::System, "NativeApp.init(): iGPUBackend %d not supported. Switching to OpenGL.", (int)g_Config.iGPUBackend);
 		g_Config.iGPUBackend = (int)GPUBackend::OPENGL;
 		goto retry;
-	}
-
-	if (IsVREnabled()) {
-		Version gitVer(PPSSPP_GIT_VERSION);
-		InitVROnAndroid(gJvm, ppssppActivity, systemName.c_str(), gitVer.ToInteger(), "PPSSPP");
-		SetVRCallbacks(NativeAxis, NativeKey, NativeTouch);
 	}
 }
 
@@ -993,7 +998,9 @@ extern "C" jboolean Java_org_ppsspp_ppsspp_NativeRenderer_displayInit(JNIEnv * e
 	System_PostUIMessage(UIMessage::RECREATE_VIEWS);
 
 	if (IsVREnabled()) {
-		EnterVR(firstStart);
+		// This is the OpenGL path only - the Vulkan one enters VR from VulkanEmuThread, since it
+		// doesn't go through displayInit at all.
+		EnterVR(firstStart, nullptr);
 	}
 	return true;
 }
@@ -1687,6 +1694,15 @@ static void VulkanEmuThread(ANativeWindow *wnd, GraphicsContext *graphicsContext
 
 	WARN_LOG(Log::G3D, "runVulkanRenderLoop. display_xres=%d display_yres=%d desiredBackbufferSizeX=%d desiredBackbufferSizeY=%d",
 		display_xres, display_yres, desiredBackbufferSizeX, desiredBackbufferSizeY);
+
+	// Has to happen before InitSurface: creating the OpenXR session decides the swapchain format,
+	// which the backbuffer render pass built during InitSurface depends on. The session survives
+	// the render loop being torn down and restarted, hence the static.
+	static bool vrFirstStart = true;
+	if (IsVREnabled()) {
+		EnterVR(vrFirstStart, graphicsContext->GetAPIContext());
+		vrFirstStart = false;
+	}
 
 	std::string errorMessage;
 	if (!graphicsContext->InitSurface(WINDOWSYSTEM_ANDROID, wnd, nullptr, &errorMessage)) {

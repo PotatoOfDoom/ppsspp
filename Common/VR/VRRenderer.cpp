@@ -32,6 +32,17 @@ DECL_PFN(xrDestroyPassthroughLayerFB);
 DECL_PFN(xrPassthroughLayerPauseFB);
 DECL_PFN(xrPassthroughLayerResumeFB);
 
+// The OpenGL path forces the alpha channel of the rendered image to 1 before releasing the
+// swapchain image, so blending against the source alpha is a no-op there. On Vulkan we can't do a
+// channel-masked clear outside a render pass, so we get the same result by telling the compositor
+// the layer is opaque instead - which also saves it a blend.
+static XrCompositionLayerFlags VR_GetLayerFlags() {
+	if (VR_GetPlatformFlag(VR_PLATFORM_RENDERER_VULKAN)) {
+		return 0;
+	}
+	return XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+}
+
 void VR_UpdateStageBounds(ovrApp* pappState) {
 	XrExtent2Df stageBounds = {};
 
@@ -427,7 +438,7 @@ void VR_FinishFrame( engine_t* engine ) {
 
 		XrCompositionLayerProjection projection_layer = {};
 		projection_layer.type = XR_TYPE_COMPOSITION_LAYER_PROJECTION;
-		projection_layer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+		projection_layer.layerFlags = VR_GetLayerFlags();
 		projection_layer.layerFlags |= XR_COMPOSITION_LAYER_CORRECT_CHROMATIC_ABERRATION_BIT;
 		projection_layer.space = engine->appState.CurrentSpace;
 		projection_layer.viewCount = ovrMaxNumEyes;
@@ -452,7 +463,7 @@ void VR_FinishFrame( engine_t* engine ) {
 		// Setup the cylinder layer
 		XrCompositionLayerCylinderKHR cylinder_layer = {};
 		cylinder_layer.type = XR_TYPE_COMPOSITION_LAYER_CYLINDER_KHR;
-		cylinder_layer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+		cylinder_layer.layerFlags = VR_GetLayerFlags();
 		cylinder_layer.space = engine->appState.CurrentSpace;
 		memset(&cylinder_layer.subImage, 0, sizeof(XrSwapchainSubImage));
 		cylinder_layer.subImage.imageRect.offset.x = 0;

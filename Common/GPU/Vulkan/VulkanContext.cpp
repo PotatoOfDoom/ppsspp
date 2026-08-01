@@ -13,6 +13,7 @@
 #include "Common/GPU/Vulkan/VulkanContext.h"
 #include "Common/GPU/Vulkan/VulkanDebug.h"
 #include "Common/StringUtils.h"
+#include "Common/VR/PPSSPPVRVulkan.h"
 
 #ifdef USE_CRT_DBG
 #undef new
@@ -201,6 +202,31 @@ VkResult VulkanContext::CreateInstance(const CreateInfo &info) {
 
 	if (EnableInstanceExtension(VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME, 0)) {
 		extensionsLookup_.EXT_swapchain_colorspace = true;
+	}
+
+	// The OpenXR runtime gets to add instance extensions of its own (XR_KHR_vulkan_enable) - if we
+	// skip these, creating the XR session with this instance is not allowed to work.
+	if (IsVRVulkanRenderer()) {
+		std::vector<std::string> vrExtensions;
+		GetVRVulkanInstanceExtensions(&vrExtensions);
+		for (const auto &ext : vrExtensions) {
+			bool alreadyEnabled = false;
+			for (auto enabled : instance_extensions_enabled_) {
+				if (ext == enabled) {
+					alreadyEnabled = true;
+					break;
+				}
+			}
+			if (!alreadyEnabled) {
+				// Has to be kept alive - instance_extensions_enabled_ only holds pointers.
+				vrInstanceExtensions_.push_back(ext);
+			}
+		}
+		// Separate loop, the vector above may reallocate while being filled.
+		for (const auto &ext : vrInstanceExtensions_) {
+			INFO_LOG(Log::G3D, "Enabling instance extension required by OpenXR: %s", ext.c_str());
+			instance_extensions_enabled_.push_back(ext.c_str());
+		}
 	}
 
 	// Validate that all the instance extensions we ask for are actually available.
@@ -515,6 +541,21 @@ int VulkanContext::GetPhysicalDeviceByName(std::string_view name) const {
 	return -1;
 }
 
+int VulkanContext::GetVRPhysicalDevice() const {
+	VkPhysicalDevice vrDevice = GetVRVulkanPhysicalDevice(instance_);
+	if (vrDevice == VK_NULL_HANDLE) {
+		return -1;
+	}
+	for (size_t i = 0; i < physical_devices_.size(); i++) {
+		if (physical_devices_[i] == vrDevice) {
+			INFO_LOG(Log::G3D, "Using physical device %d as requested by the OpenXR runtime", (int)i);
+			return (int)i;
+		}
+	}
+	WARN_LOG(Log::G3D, "The OpenXR runtime asked for a physical device we didn't enumerate - ignoring");
+	return -1;
+}
+
 int VulkanContext::GetBestPhysicalDevice() const {
 	// Rules: Prefer discrete over embedded.
 	// Prefer nVidia over Intel.
@@ -638,6 +679,29 @@ VkResult VulkanContext::CreateDevice(int physical_device) {
 	GetDeviceExtensionList(&device_extension_properties_);
 
 	device_extensions_enabled_.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+
+	// Same deal as the instance extensions - the OpenXR runtime dictates these.
+	if (IsVRVulkanRenderer()) {
+		std::vector<std::string> vrExtensions;
+		GetVRVulkanDeviceExtensions(&vrExtensions);
+		for (const auto &ext : vrExtensions) {
+			bool alreadyEnabled = false;
+			for (auto enabled : device_extensions_enabled_) {
+				if (ext == enabled) {
+					alreadyEnabled = true;
+					break;
+				}
+			}
+			if (!alreadyEnabled) {
+				vrDeviceExtensions_.push_back(ext);
+			}
+		}
+		// Separate loop, the vector above may reallocate while being filled.
+		for (const auto &ext : vrDeviceExtensions_) {
+			INFO_LOG(Log::G3D, "Enabling device extension required by OpenXR: %s", ext.c_str());
+			device_extensions_enabled_.push_back(ext.c_str());
+		}
+	}
 
 	if (!init_error_.empty() || physical_device_ < 0) {
 		ERROR_LOG(Log::G3D, "Vulkan init failed: %s", init_error_.c_str());

@@ -27,7 +27,6 @@
 #include "Common/Log.h"
 #include "Common/StringUtils.h"
 #include "Common/System/System.h"
-#include "Common/VR/PPSSPPVR.h"
 #include "Common/File/FileUtil.h"
 
 #if !PPSSPP_PLATFORM(WINDOWS) && !PPSSPP_PLATFORM(SWITCH)
@@ -439,11 +438,6 @@ bool VulkanMayBeAvailable() {
 	g_vulkanMayBeAvailable = System_GetPropertyInt(SYSPROP_SYSTEMVERSION) >= 13;
 	return g_vulkanMayBeAvailable;
 #else
-	// Unsupported in VR at the moment
-	if (IsVREnabled()) {
-		return false;
-	}
-
 	if (g_vulkanAvailabilityChecked) {
 		return g_vulkanMayBeAvailable;
 	}

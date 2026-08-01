@@ -230,6 +230,7 @@
     <ClInclude Include="..\..\Common\UI\ViewGroup.h" />
     <ClInclude Include="..\..\Common\VR\OpenXRLoader.h" />
     <ClInclude Include="..\..\Common\VR\PPSSPPVR.h" />
+    <ClInclude Include="..\..\Common\VR\PPSSPPVRVulkan.h" />
     <ClInclude Include="..\..\Common\VR\VRBase.h" />
     <ClInclude Include="..\..\Common\VR\VRFramebuffer.h" />
     <ClInclude Include="..\..\Common\VR\VRInput.h" />

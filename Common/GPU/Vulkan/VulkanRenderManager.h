@@ -585,6 +585,9 @@ private:
 	int curHeight_ = -1;
 
 	bool insideFrame_ = false;
+	// Whether we successfully opened an OpenXR frame in BeginFrame - if not, there's nothing to
+	// acquire, release or submit to the compositor this frame.
+	bool vrFrameStarted_ = false;
 	// probably doesn't need to be atomic.
 	std::atomic<bool> runCompileThread_{};
 

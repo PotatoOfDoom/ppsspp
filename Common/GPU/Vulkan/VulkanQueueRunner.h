@@ -269,6 +269,11 @@ public:
 
 	bool InitBackbufferFramebuffers(int width, int height, FrameDataShared &frameDataShared);
 	bool InitDepthStencilBuffer(VkCommandBuffer cmd, VulkanBarrierBatch *barriers);  // Used for non-buffered rendering.
+
+	// The OpenXR equivalent of the above. Can only run once the VR renderer has created its
+	// swapchains, so it's called lazily from RunSteps rather than at backbuffer creation time.
+	bool InitVRFramebuffers();
+	void DestroyVRFramebuffers();
 private:
 
 	VKRRenderPass *PerformBindFramebufferAsRenderTarget(const VKRStep &pass, VkCommandBuffer cmd);
@@ -324,6 +329,20 @@ private:
 		VkImageView view = VK_NULL_HANDLE;
 	};
 	DepthBufferInfo depth_;
+
+	// One set of framebuffers per eye, wrapping the images we get handed by OpenXR. They share a
+	// depth buffer - just like the real backbuffer framebuffers do - since the eyes are rendered
+	// one after the other and the render pass always clears.
+	struct VRFramebuffers {
+		std::vector<VkImageView> views;
+		std::vector<VkFramebuffer> framebuffers;
+	};
+	VRFramebuffers vrFramebuffers_[2];
+	DepthBufferInfo vrDepth_;
+	int vrWidth_ = 0;
+	int vrHeight_ = 0;
+	// Used to detect that the VR renderer recreated its swapchains behind our back.
+	VkImage vrFirstImage_ = VK_NULL_HANDLE;
 };
 
 const char *VKRRenderCommandToString(VKRRenderCommand cmd);

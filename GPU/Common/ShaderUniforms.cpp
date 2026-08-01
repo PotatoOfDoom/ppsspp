@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 #include "ShaderUniforms.h"
 #include "Common/System/Display.h"
@@ -9,6 +10,8 @@
 #include "Common/Math/CrossSIMD.h"
 #include "Common/Math/lin/vec3.h"
 #include "Common/TimeUtil.h"
+#include "Common/VR/PPSSPPVR.h"
+#include "Core/Config.h"
 #include "GPU/GPUState.h"
 #include "GPU/Common/FramebufferManagerCommon.h"
 #include "GPU/Common/GPUStateUtils.h"
@@ -32,7 +35,67 @@ void UpdateRotation(float rotMatrix[4], bool useBufferedRendering) {
 	}
 }
 
+bool GuessVRDrawingHUD(bool is2D, bool flatScreen) {
+
+	bool hud = true;
+	//HUD shouldn't be modified in nonVR mode
+	if (IsBigScreenVRMode()) hud = false;
+	//HUD can be disabled in settings
+	else if (!g_Config.bRescaleHUD) hud = false;
+	//HUD cannot be rendered in flatscreen
+	else if (flatScreen) hud = false;
+	//HUD has to be 2D
+	else if (!is2D) hud = false;
+	//HUD has to be blended
+	else if (!gstate.isAlphaBlendEnabled()) hud = false;
+	//HUD cannot be rendered with clear color mask
+	else if (gstate.isClearModeColorMask()) hud = false;
+	//HUD cannot be rendered with depth color mask
+	else if (gstate.isClearModeDepthMask()) hud = false;
+	//HUD texture has to contain alpha channel
+	else if (!gstate.isTextureAlphaUsed()) hud = false;
+	//HUD texture cannot be in 5551 format
+	else if (gstate.getTextureFormat() == GETextureFormat::GE_TFMT_5551) hud = false;
+	//HUD texture cannot be in CLUT16 format
+	else if (gstate.getTextureFormat() == GETextureFormat::GE_TFMT_CLUT16) hud = false;
+	//HUD texture cannot be in CLUT32 format
+	else if (gstate.getTextureFormat() == GETextureFormat::GE_TFMT_CLUT32) hud = false;
+	//HUD cannot have full texture alpha
+	else if (gstate_c.textureSolidAlpha && gstate.getTextureFormat() != GETextureFormat::GE_TFMT_CLUT4) hud = false;
+	//HUD must have full vertex alpha
+	else if (!gstate_c.vertexFullAlpha && gstate.getDepthTestFunction() == GE_COMP_NEVER) hud = false;
+	//HUD cannot render FB screenshot
+	else if (gstate_c.curTextureHeight % 68 <= 1) hud = false;
+	//HUD cannot be rendered with add function
+	else if (gstate.getTextureFunction() == GETexFunc::GE_TEXFUNC_ADD) hud = false;
+	//HUD cannot be rendered with replace function
+	else if (gstate.getTextureFunction() == GETexFunc::GE_TEXFUNC_REPLACE) hud = false;
+	//HUD cannot be rendered with full clear color mask
+	else if ((gstate.getClearModeColorMask() == 0xFFFFFF) && (gstate.getColorMask() == 0xFFFFFF)) hud = false;
+
+	return hud;
+}
+
 void BaseUpdateUniforms(UB_VS_FS_Base *ub, uint64_t dirtyUniforms, bool useBufferedRendering, bool pixelMapped) {
+	// Analyze the scene, same way the GL shader manager does.
+	const bool useVR = gstate_c.Use(GPU_USE_VIRTUAL_REALITY);
+	bool is2D = false, flatScreen = false;
+	if (useVR) {
+		is2D = Is2DVRObject(gstate.projMatrix, gstate.isModeThrough());
+		flatScreen = IsFlatVRScene();
+
+		// HUD scaling. Not tied to a dirty flag - the heuristic depends on per-draw render state,
+		// not just on the matrices.
+		if (GuessVRDrawingHUD(is2D, flatScreen)) {
+			float aspect = 480.0f / 272.0f * (IsImmersiveVRMode() ? 0.5f : 1.0f);
+			ub->scaleX = g_Config.fHeadUpDisplayScale * aspect;
+			ub->scaleY = g_Config.fHeadUpDisplayScale;
+		} else {
+			ub->scaleX = 1.0f;
+			ub->scaleY = 1.0f;
+		}
+	}
+
 	if (dirtyUniforms & DIRTY_TEXENV) {
 		Uint8x3ToFloat3(ub->texEnvColor, gstate.texenvcolor);
 	}
@@ -72,6 +135,16 @@ void BaseUpdateUniforms(UB_VS_FS_Base *ub, uint64_t dirtyUniforms, bool useBuffe
 	}
 
 	if (dirtyUniforms & DIRTY_PROJMATRIX) {
+		if (useVR) {
+			// The VR "lens" projection is what actually gets used for the position; u_proj is kept
+			// around so the shader can restore a sane Z for the depth buffer.
+			if (flatScreen || is2D) {
+				CopyMatrix4x4(ub->projLens, gstate.projMatrix);
+			} else {
+				UpdateVRProjection(gstate.projMatrix, ub->projLens);
+			}
+			UpdateVRParams(gstate.projMatrix);
+		}
 		CopyMatrix4x4(ub->proj, gstate.projMatrix);
 		ub->rotation = useBufferedRendering ? 0 : (float)g_display.rotation;
 	}
@@ -109,7 +182,20 @@ void BaseUpdateUniforms(UB_VS_FS_Base *ub, uint64_t dirtyUniforms, bool useBuffe
 		ConvertMatrix4x3To3x4Transposed(ub->world, gstate.worldMatrix);
 	}
 	if (dirtyUniforms & DIRTY_VIEWMATRIX) {
-		ConvertMatrix4x3To3x4Transposed(ub->view, gstate.viewMatrix);
+		if (useVR && !is2D) {
+			// Combine the game's view matrix with the headset pose. The result is still affine, so
+			// the first three columns are all the shader's mat3x4 u_view needs - which is also
+			// exactly the layout SetUniformM4x4 would upload for a mat4 on the GL path.
+			float leftEyeView[16];
+			float rightEyeView[16];
+			ConvertMatrix4x3To4x4Transposed(leftEyeView, gstate.viewMatrix);
+			ConvertMatrix4x3To4x4Transposed(rightEyeView, gstate.viewMatrix);
+			UpdateVRView(leftEyeView, rightEyeView);
+			// Mono rendering (GetVRPassesCount() == 1 on Vulkan), so the left eye is what we get.
+			memcpy(ub->view, leftEyeView, 12 * sizeof(float));
+		} else {
+			ConvertMatrix4x3To3x4Transposed(ub->view, gstate.viewMatrix);
+		}
 	}
 	if (dirtyUniforms & DIRTY_TEXMATRIX) {
 		ConvertMatrix4x3To3x4Transposed(ub->tex, gstate.tgenMatrix);
