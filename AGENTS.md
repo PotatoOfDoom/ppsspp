@@ -82,12 +82,15 @@ small examples to copy from). A module is a `const HLEFunction <name>[]` table o
   the `// add new modules here.` comment near the end of that function) - not inserted alphabetically/logically among
   the existing `Register_*()` calls. Module registration order affects numeric IDs used in savestates, so inserting a
   new module earlier in that list would break save-state compatibility for saves made with older builds.
-- Remember to add any new `.cpp`/`.c` file to **five** places: `Core/CMakeLists.txt`, `Core/Core.vcxproj`,
-  `Core/Core.vcxproj.filters`, `android/jni/Android.mk`, and `libretro/Makefile.common`. New `.h` files only need the
-  first three (`Android.mk`/`Makefile.common` are plain compiled-source lists so headers
-  don't go in them). Only the CMakeLists.txt change can be verified from a Linux/Mac build - the rest can't be
-  build-tested here, so double check them by hand against how an existing neighboring file (e.g. `sceVaudio.cpp`) is
-  listed in each. Note: New files in the unittest project have to be updated in the unittest part in android/jni/Android.mk.
+- Remember to add any new `.cpp`/`.c` file to **seven** places: `Core/CMakeLists.txt`, `Core/Core.vcxproj`,
+  `Core/Core.vcxproj.filters`, `android/jni/Android.mk`, `libretro/Makefile.common`,
+  `UWP/CoreUWP/CoreUWP.vcxproj` and `UWP/CoreUWP/CoreUWP.vcxproj.filters`. The UWP project keeps its own copy of
+  the Core source list, so missing it breaks the `build-uwp` CI job with unresolved externals - and nothing else.
+  New `.h` files go everywhere except `Android.mk`/`Makefile.common` (those are plain compiled-source lists so
+  headers don't go in them). Only the CMakeLists.txt change can be verified from a Linux/Mac build - the rest can't
+  be build-tested here, so double check them by hand against how an existing neighboring file (e.g. `sceVaudio.cpp`)
+  is listed in each; `grep -rl sceVaudio.cpp .` lists every file that needs an entry.
+  Note: New files in the unittest project have to be updated in the unittest part in android/jni/Android.mk.
 
 ## WebSocket debugger
 
