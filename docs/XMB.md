@@ -5,12 +5,24 @@ The XMB (XrossMediaBar) is the PSP's system software. Its main module is
 PPSSPP has the beginnings of a boot path for it. **It does not get to a drawn frame yet** — see
 [What's still missing](#whats-still-missing).
 
-Nothing in this repo contains PSP firmware, and PPSSPP can't provide it. Running the VSH requires
-files dumped from a PSP you own.
+Nothing in this repo contains PSP firmware, and PPSSPP neither ships nor downloads it. Running the
+VSH requires files you supply yourself, from a PSP you own or from an official Sony update file.
 
 ## How to try it
 
-1. Dump `flash0` from a PSP. The directory layout PPSSPP expects is the flash volume's own layout:
+1. Get a `flash0` tree, either by dumping it from a PSP or by extracting `DATA.PSAR` from an official
+   Sony update `EBOOT.PBP` (which carries the complete flash0 contents) with a tool like
+   [pspdecrypt](https://github.com/John-K/pspdecrypt). PPSSPP neither ships nor fetches firmware.
+
+   **Decrypt and decompress the modules on the PC side while you're at it.** PPSSPP takes a plain
+   ELF/PRX straight to `ElfReader` and never enters the `~PSP` decrypt/decompress path at all
+   (`__KernelLoadELFFromPtr` gates that whole block on the `~PSP` magic), so a pre-decrypted tree
+   sidesteps the KL4E problem below entirely. This is the recommended route.
+
+   Note that per-console data — IdStorage, the PSID, the MAC address — is in neither a PSAR nor a
+   plain flash0 dump. PPSSPP has to fake those regardless.
+
+2. The directory layout PPSSPP expects is the flash volume's own layout:
 
    ```
    <flash0 directory>/
@@ -22,12 +34,12 @@ files dumped from a PSP you own.
      data/cert/
    ```
 
-2. Point PPSSPP at it. The `flash0` directory defaults to `assets/flash0` next to the executable
+3. Point PPSSPP at it. The `flash0` directory defaults to `assets/flash0` next to the executable
    (it normally only holds the bundled fonts), and can be changed in the config as
    `flash0Directory`. Alternatively, just boot any `vshmain.prx` directly — the directory three
    levels above it is mounted as `flash0:`, so a dump can live anywhere.
 
-3. Boot it, either way:
+4. Boot it, either way:
 
    ```
    PPSSPPSDL --vsh
@@ -71,27 +83,31 @@ Also relevant, outside that function:
 
 Roughly in the order you hit them.
 
-### 1. KL4E decompression
+### 1. KL4E decompression — only if you feed PPSSPP raw modules
 
-Most `kd/` and `vsh/` modules are compressed with one of Sony's in-house LZ variants — `KL4E`, or
-the older `KL3E`/`2RLZ`/`1RLZ` — rather than gzip. PPSSPP only implements gzip, so loading such a
-module fails with:
+Most `kd/` and `vsh/` modules as stored in flash are compressed with one of Sony's in-house LZ
+variants — `KL4E`, or the older `KL3E`/`2RLZ`/`1RLZ` — rather than gzip. PPSSPP only implements gzip,
+so loading such a module as-is fails with:
 
 ```
 Module 'vshmain' uses KL4E compression, which PPSSPP can't decompress
 ```
 
 `DetectPrxCompression` in `Core/HLE/sceKernelModule.cpp` names the format so this is obvious in the
-log. Implementing the decompressor is the single biggest blocker.
+log rather than showing up as a generic failure.
 
-Note on sourcing an implementation: KL4E was reverse engineered from firmware 6.60 (originally
+**This is avoidable, not a hard blocker** — decrypt and decompress the tree on the PC side and
+PPSSPP loads the resulting plain ELFs directly, as described under "How to try it". Implementing the
+decompressor is only needed to load an untouched flash0 dump.
+
+If someone does implement it: KL4E was reverse engineered from firmware 6.60 (originally
 `UtilsForKernel_6C6887EE` in `sysmem.prx`), and the well-known implementations —
 [pspdecrypt](https://github.com/John-K/pspdecrypt)'s `kl4e.c` and
 [JPCSP](https://github.com/jpcsp/jpcsp)'s port of it — are **GPLv3**, which can't be copied into
-PPSSPP (GPLv2-or-later). It needs to be written from the algorithm rather than copied. There is
+PPSSPP (GPLv2-or-later). It has to be written from the algorithm rather than copied. There is
 already an LZRC range decoder in `Core/FileSystems/tlzrc.cpp` that shares machinery with it.
 
-### 2. The kernel/driver HLE surface
+### 2. The kernel/driver HLE surface — the actual frontier
 
 PPSSPP's HLE surface is essentially the user-mode API that games use. Practically none of what the
 VSH imports exists: `sceVshBridge`, `sceImpose_driver`, `sceSysreg_driver`, `sceSyscon_driver`,
@@ -109,7 +125,11 @@ the SHA-1 of the exported function name, read little-endian, which is a useful w
 name/NID pair before adding it.
 
 `scePaf` (the VSH's whole widget/resource framework) does **not** need HLE — `paf.prx` is a real
-module in the dump and can run as-is, once it can be decompressed and loaded.
+module in the dump and runs as-is. Nothing in the HLE blacklist (`g_moduleMeta` in
+`Core/HLE/HLE.cpp`) matches `vshmain`, `paf` or the `*_plugin` modules, so they are loaded for real
+rather than faked.
+
+With a pre-decrypted tree this, not decompression, is what stands between here and an XMB frame.
 
 ### 3. Privilege model
 
