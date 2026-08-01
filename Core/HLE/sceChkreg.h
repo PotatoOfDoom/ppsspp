@@ -1,4 +1,4 @@
-// Copyright (c) 2012- PPSSPP Project.
+// Copyright (c) 2026- PPSSPP Project.
 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -17,16 +17,10 @@
 
 #pragma once
 
-class PointerWrap;
+#include "Common/CommonTypes.h"
 
-void Register_sceImpose();
-void __ImposeInit();
-void __ImposeDoState(PointerWrap &p);
+void Register_sceChkreg();
 
-// The impose params, for sceImposeGetParam/SetParam. Used by the VSH bridges in sceVshBridge.cpp -
-// the kernel-side sceImpose_driver library that normally exports these can't be implemented, since
-// its NIDs were obfuscated from firmware 6.20 on and never recovered. Return false for a param ID
-// we don't know.
-bool ImposeGetParam(int param, int *value);
-bool ImposeSetParam(int param, int value);
-const char *ImposeParamName(int param);
+// Exposed so the VSH bridges in sceVshBridge.cpp go through the same implementation.
+int sceChkregGetPsCode(u32 psCodePtr);
+int sceChkregCheckRegion(u32 umdMediaType, u32 regionId);

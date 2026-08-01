@@ -663,6 +663,8 @@
     <ClCompile Include="HLE\sceUtility.cpp" />
     <ClCompile Include="HLE\sceVaudio.cpp" />
     <ClCompile Include="HLE\sceVshBridge.cpp" />
+    <ClCompile Include="HLE\sceIdStorage.cpp" />
+    <ClCompile Include="HLE\sceChkreg.cpp" />
     <ClCompile Include="HLE\__sceAudio.cpp" />
     <ClCompile Include="HW\MediaEngine.cpp" />
     <ClCompile Include="HW\MemoryStick.cpp" />
@@ -1165,6 +1167,8 @@
     <ClInclude Include="HLE\sceKernelVTimer.h" />
     <ClInclude Include="HLE\sceVaudio.h" />
     <ClInclude Include="HLE\sceVshBridge.h" />
+    <ClInclude Include="HLE\sceIdStorage.h" />
+    <ClInclude Include="HLE\sceChkreg.h" />
     <ClInclude Include="HLE\ThreadQueueList.h" />
     <ClInclude Include="HLE\__sceAudio.h" />
     <ClInclude Include="HW\BufferQueue.h" />

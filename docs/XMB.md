@@ -109,18 +109,38 @@ already an LZRC range decoder in `Core/FileSystems/tlzrc.cpp` that shares machin
 
 ### 2. The kernel/driver HLE surface — the actual frontier
 
-PPSSPP's HLE surface is essentially the user-mode API that games use. `sceVshBridge` now exists
-(`Core/HLE/sceVshBridge.cpp`), but the rest of what the VSH imports doesn't: `sceImpose_driver`,
-`sceSysreg_driver`, `sceSyscon_driver`, `sceIdStorage_driver`, `sceNand_driver`, `sceMScm_driver`,
-`sceChkreg`, `sceCertLoader`, `sceMesgLed`, `sceClockgen_driver`, `sceUmdMan_driver`, `sceMeCore`,
-`sceLibUpdateDL`, `sceVshCommonGui`/`sceVshCommonUtil`, and the kernel-side
-`sceUtility`/`sceRegistry`.
+PPSSPP's HLE surface is essentially the user-mode API that games use. Three of the VSH's kernel
+libraries now exist:
 
-`sceVshBridge` itself is only partly wired: of the 87 exports whose names are known, five delegate
-to the drivers PPSSPP already has (ctrl reads, sampling mode, `sceIoDevctl`/`sceIoIoctl`) and the
-rest report UNIMPL. See the comment at the top of that file — in particular, kernel NIDs are
-obfuscated and firmware-specific, so the table targets 6.61 and will not resolve against an older
-dump.
+| Library | File | State |
+| --- | --- | --- |
+| `sceVshBridge` | `Core/HLE/sceVshBridge.cpp` | 87 of 189 exports named; the ones that map onto something PPSSPP has are wired through |
+| `sceChkreg_driver` | `Core/HLE/sceChkreg.cpp` | complete — PS code, region check, PSP model, PS flags |
+| `sceIdStorage_driver` | `Core/HLE/sceIdStorage.cpp` | complete API, but no leaf contents (see below) |
+
+Still missing: `sceSysreg_driver`, `sceSyscon_driver`, `sceNand_driver`, `sceMScm_driver`,
+`sceCertLoader`, `sceMesgLed`, `sceClockgen_driver`, `sceUmdMan_driver`, `sceMeCore`,
+`sceLibUpdateDL`, `sceVshCommonGui`/`sceVshCommonUtil`, and the kernel-side `sceUtility`.
+
+Two things learned while adding those, which shape what else is possible:
+
+**Kernel NIDs are obfuscated and firmware-specific.** SCE scrambled them in later firmwares, so for
+kernel libraries the NID is *not* SHA-1(name) and it differs per firmware version. The tables target
+**6.61** and will not resolve against an older dump. Worse, for some libraries the names were never
+recovered at all — `sceImpose_driver` has 31 exports on 6.61 and *zero* known names (they're known
+up to 5.00, before obfuscation), so that library simply cannot be implemented for a modern dump.
+Check [PSPLibDoc](https://github.com/pspdev/psplibdoc) before planning work on one.
+
+**The VSH mostly doesn't call these libraries directly** — it goes through `sceVshBridge`, whose
+names *are* largely known. So `vshImposeGetParam`/`vshImposeSetParam` are implemented against
+impose-param state in `Core/HLE/sceImpose.cpp` even though `sceImpose_driver` can't be. When a
+kernel library is a dead end, check whether the bridge route is open.
+
+**ID storage has no contents.** The API answers truthfully (512-byte leaves, formatted, read-only)
+but every leaf read fails with the leaf ID in the log. The interesting leaves (0x100–0x102) hold
+ECDSA-signed certificates over a real console's ConsoleId, which cannot be fabricated — and per-
+console data is in neither a firmware dump nor a PSAR. If the XMB turns out to need a specific
+non-signed field, the UMD region codes at leaf 0x102 offset 0xB0 are the place to look.
 
 Unresolved imports are not fatal — `ImportFuncSymbol` writes a stub that returns
 `SCE_KERNEL_ERROR_LIBRARY_NOT_YET_LINKED` — so `vshmain` loads and runs, but every call into the

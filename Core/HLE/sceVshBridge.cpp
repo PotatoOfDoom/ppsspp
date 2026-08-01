@@ -33,13 +33,21 @@
 //
 // The library exports 189 functions on 6.61; the 87 whose names are known are listed here. The
 // rest still log usefully without a table entry - an unknown NID in a known library reports the
-// library name and NID at import time. Only the calls that map cleanly onto something PPSSPP
-// already implements are wired up; the rest report UNIMPL so the log tells you what the VSH
-// actually asked for. See docs/XMB.md.
+// library name and NID at import time.
+//
+// Calls that map onto something PPSSPP implements are wired through to it with hleCall, so there is
+// exactly one implementation of each: ctrl reads and sampling mode, sceIoDevctl/sceIoIoctl,
+// chkreg (sceChkreg.cpp), ID storage lookups (sceIdStorage.cpp) and the impose params
+// (sceImpose.cpp). The rest report UNIMPL, so the log tells you what the VSH actually asked for
+// instead of trapping anonymously. See docs/XMB.md.
 
 #include "Core/HLE/HLE.h"
+#include "Core/HLE/ErrorCodes.h"
 #include "Core/HLE/FunctionWrappers.h"
+#include "Core/HLE/sceChkreg.h"
 #include "Core/HLE/sceCtrl.h"
+#include "Core/HLE/sceIdStorage.h"
+#include "Core/HLE/sceImpose.h"
 #include "Core/HLE/sceIo.h"
 #include "Core/HLE/sceVshBridge.h"
 
@@ -67,94 +75,124 @@ static u32 vshIoIoctl(u32 id, u32 cmd, u32 indataPtr, u32 inlen, u32 outdataPtr,
 	return hleCall(sceIo, u32, sceIoIoctl, id, cmd, indataPtr, inlen, outdataPtr, outlen);
 }
 
+static int vshChkregGetPsCode(u32 psCodePtr) {
+	return hleCall(sceChkreg_driver, int, sceChkregGetPsCode, psCodePtr);
+}
+
+static int vshChkregCheckRegion(u32 umdMediaType, u32 regionId) {
+	return hleCall(sceChkreg_driver, int, sceChkregCheckRegion, umdMediaType, regionId);
+}
+
+static int vshIdStorageLookup(u32 leafId, u32 offset, u32 bufPtr, u32 len) {
+	return hleCall(sceIdStorage_driver, int, sceIdStorageLookup, leafId, offset, bufPtr, len);
+}
+
+// The XMB reaches the impose params through here rather than through sceImpose_driver, which is
+// just as well - that library's NIDs were obfuscated from firmware 6.20 on and its names were never
+// recovered, so it can't be implemented. See sceImpose.h.
+static int vshImposeGetParam(int param) {
+	int value = 0;
+	if (!ImposeGetParam(param, &value)) {
+		return hleLogError(Log::HLE, SCE_KERNEL_ERROR_INVALID_VALUE, "unknown impose param %03x", param);
+	}
+	return hleLogDebug(Log::HLE, value, "%s", ImposeParamName(param));
+}
+
+static int vshImposeSetParam(int param, int value) {
+	if (!ImposeSetParam(param, value)) {
+		return hleLogError(Log::HLE, SCE_KERNEL_ERROR_INVALID_VALUE, "impose param %03x (%s) rejected", param, ImposeParamName(param));
+	}
+	return hleLogDebug(Log::HLE, 0, "%s = %d", ImposeParamName(param), value);
+}
+
 const HLEFunction sceVshBridge[] = {
-	{0X5F35E8FE, &WrapI_V<VshBridgeUnimpl>,            "vshAudioSRCChReserve",                   'i', "", HLE_KERNEL_SYSCALL},
-	{0XC886B91B, &WrapI_V<VshBridgeUnimpl>,            "vshAudioSRCOutputBlocking",              'i', "", HLE_KERNEL_SYSCALL},
-	{0X5C2983C2, &WrapI_V<VshBridgeUnimpl>,            "vshChkregCheckRegion",                   'i', "", HLE_KERNEL_SYSCALL},
-	{0X74DBE57E, &WrapI_V<VshBridgeUnimpl>,            "vshChkregCheckRegion",                   'i', "", HLE_KERNEL_SYSCALL},
-	{0X01730088, &WrapI_V<VshBridgeUnimpl>,            "vshChkregGetPsCode",                     'i', "", HLE_KERNEL_SYSCALL},
-	{0X61001D64, &WrapI_V<VshBridgeUnimpl>,            "vshChkregGetPsCode",                     'i', "", HLE_KERNEL_SYSCALL},
-	{0XEBC3A334, &WrapI_U<vshCtrlGetSamplingMode>,     "vshCtrlGetSamplingMode",                 'i', "x", HLE_KERNEL_SYSCALL},
-	{0X0D7A4FE4, &WrapI_UU<vshCtrlReadBufferPositive>, "vshCtrlReadBufferPositive",              'i', "xx", HLE_KERNEL_SYSCALL},
-	{0XC6395C03, &WrapI_UU<vshCtrlReadBufferPositive>, "vshCtrlReadBufferPositive",              'i', "xx", HLE_KERNEL_SYSCALL},
-	{0X4DB43867, &WrapI_V<VshBridgeUnimpl>,            "vshIdStorageLookup",                     'i', "", HLE_KERNEL_SYSCALL},
-	{0X228B9BC0, &WrapI_V<VshBridgeUnimpl>,            "vshImposeChanges",                       'i', "", HLE_KERNEL_SYSCALL},
-	{0X5894C339, &WrapI_V<VshBridgeUnimpl>,            "vshImposeChanges",                       'i', "", HLE_KERNEL_SYSCALL},
-	{0X360752BF, &WrapI_V<VshBridgeUnimpl>,            "vshImposeGetParam",                      'i', "", HLE_KERNEL_SYSCALL},
-	{0X639C3CB3, &WrapI_V<VshBridgeUnimpl>,            "vshImposeGetParam",                      'i', "", HLE_KERNEL_SYSCALL},
-	{0XF71BB4D5, &WrapI_V<VshBridgeUnimpl>,            "vshImposeGetParam",                      'i', "", HLE_KERNEL_SYSCALL},
-	{0X6234B2F2, &WrapI_V<VshBridgeUnimpl>,            "vshImposeGetStatus",                     'i', "", HLE_KERNEL_SYSCALL},
-	{0XCA719C34, &WrapI_V<VshBridgeUnimpl>,            "vshImposeGetStatus",                     'i', "", HLE_KERNEL_SYSCALL},
-	{0XD818FD24, &WrapI_V<VshBridgeUnimpl>,            "vshImposeGetStatus",                     'i', "", HLE_KERNEL_SYSCALL},
-	{0X4A596D2D, &WrapI_V<VshBridgeUnimpl>,            "vshImposeSetParam",                      'i', "", HLE_KERNEL_SYSCALL},
-	{0X88C35487, &WrapI_V<VshBridgeUnimpl>,            "vshImposeSetParam",                      'i', "", HLE_KERNEL_SYSCALL},
-	{0X4E4E4DA3, &WrapI_V<VshBridgeUnimpl>,            "vshImposeSetStatus",                     'i', "", HLE_KERNEL_SYSCALL},
-	{0XD7D7E7B6, &WrapI_V<VshBridgeUnimpl>,            "vshImposeSetStatus",                     'i', "", HLE_KERNEL_SYSCALL},
+	{0X5F35E8FE, &WrapI_V<VshBridgeUnimpl>,            "vshAudioSRCChReserve",                   'i', "",       HLE_KERNEL_SYSCALL},
+	{0XC886B91B, &WrapI_V<VshBridgeUnimpl>,            "vshAudioSRCOutputBlocking",              'i', "",       HLE_KERNEL_SYSCALL},
+	{0X5C2983C2, &WrapI_UU<vshChkregCheckRegion>,      "vshChkregCheckRegion",                   'i', "xx",     HLE_KERNEL_SYSCALL},
+	{0X74DBE57E, &WrapI_UU<vshChkregCheckRegion>,      "vshChkregCheckRegion",                   'i', "xx",     HLE_KERNEL_SYSCALL},
+	{0X01730088, &WrapI_U<vshChkregGetPsCode>,         "vshChkregGetPsCode",                     'i', "x",      HLE_KERNEL_SYSCALL},
+	{0X61001D64, &WrapI_U<vshChkregGetPsCode>,         "vshChkregGetPsCode",                     'i', "x",      HLE_KERNEL_SYSCALL},
+	{0XEBC3A334, &WrapI_U<vshCtrlGetSamplingMode>,     "vshCtrlGetSamplingMode",                 'i', "x",      HLE_KERNEL_SYSCALL},
+	{0X0D7A4FE4, &WrapI_UU<vshCtrlReadBufferPositive>, "vshCtrlReadBufferPositive",              'i', "xx",     HLE_KERNEL_SYSCALL},
+	{0XC6395C03, &WrapI_UU<vshCtrlReadBufferPositive>, "vshCtrlReadBufferPositive",              'i', "xx",     HLE_KERNEL_SYSCALL},
+	{0X4DB43867, &WrapI_UUUU<vshIdStorageLookup>,      "vshIdStorageLookup",                     'i', "xxxx",   HLE_KERNEL_SYSCALL},
+	{0X228B9BC0, &WrapI_V<VshBridgeUnimpl>,            "vshImposeChanges",                       'i', "",       HLE_KERNEL_SYSCALL},
+	{0X5894C339, &WrapI_V<VshBridgeUnimpl>,            "vshImposeChanges",                       'i', "",       HLE_KERNEL_SYSCALL},
+	{0X360752BF, &WrapI_I<vshImposeGetParam>,          "vshImposeGetParam",                      'i', "i",      HLE_KERNEL_SYSCALL},
+	{0X639C3CB3, &WrapI_I<vshImposeGetParam>,          "vshImposeGetParam",                      'i', "i",      HLE_KERNEL_SYSCALL},
+	{0XF71BB4D5, &WrapI_I<vshImposeGetParam>,          "vshImposeGetParam",                      'i', "i",      HLE_KERNEL_SYSCALL},
+	{0X6234B2F2, &WrapI_V<VshBridgeUnimpl>,            "vshImposeGetStatus",                     'i', "",       HLE_KERNEL_SYSCALL},
+	{0XCA719C34, &WrapI_V<VshBridgeUnimpl>,            "vshImposeGetStatus",                     'i', "",       HLE_KERNEL_SYSCALL},
+	{0XD818FD24, &WrapI_V<VshBridgeUnimpl>,            "vshImposeGetStatus",                     'i', "",       HLE_KERNEL_SYSCALL},
+	{0X4A596D2D, &WrapI_II<vshImposeSetParam>,         "vshImposeSetParam",                      'i', "ii",     HLE_KERNEL_SYSCALL},
+	{0X88C35487, &WrapI_II<vshImposeSetParam>,         "vshImposeSetParam",                      'i', "ii",     HLE_KERNEL_SYSCALL},
+	{0X4E4E4DA3, &WrapI_V<VshBridgeUnimpl>,            "vshImposeSetStatus",                     'i', "",       HLE_KERNEL_SYSCALL},
+	{0XD7D7E7B6, &WrapI_V<VshBridgeUnimpl>,            "vshImposeSetStatus",                     'i', "",       HLE_KERNEL_SYSCALL},
 	{0X2380DC08, &WrapU_CIUIUI<vshIoDevctl>,           "vshIoDevctl",                            'i', "sxpipi", HLE_KERNEL_SYSCALL},
 	{0X75C939B9, &WrapU_UUUUUU<vshIoIoctl>,            "vshIoIoctl",                             'i', "ixpipi", HLE_KERNEL_SYSCALL},
-	{0XEF8229E9, &WrapI_V<VshBridgeUnimpl>,            "vshKernelDipswClear",                    'i', "", HLE_KERNEL_SYSCALL},
-	{0XCF9DA76A, &WrapI_V<VshBridgeUnimpl>,            "vshKernelDipswSet",                      'i', "", HLE_KERNEL_SYSCALL},
-	{0X6032E5EE, &WrapI_V<VshBridgeUnimpl>,            "vshKernelExitVSHVSH",                    'i', "", HLE_KERNEL_SYSCALL},
-	{0X7423151D, &WrapI_V<VshBridgeUnimpl>,            "vshKernelLoadExecBufferVSHUsbWlan",      'i', "", HLE_KERNEL_SYSCALL},
-	{0X59E6C2E1, &WrapI_V<VshBridgeUnimpl>,            "vshKernelLoadExecBufferVSHUsbWlanDebug", 'i', "", HLE_KERNEL_SYSCALL},
-	{0XC5B25CA7, &WrapI_V<VshBridgeUnimpl>,            "vshKernelLoadExecVSHDiscDebug",          'i', "", HLE_KERNEL_SYSCALL},
-	{0X0DCD4377, &WrapI_V<VshBridgeUnimpl>,            "vshKernelLoadExecVSHDiscUpdater",        'i', "", HLE_KERNEL_SYSCALL},
-	{0X81682A40, &WrapI_V<VshBridgeUnimpl>,            "vshKernelLoadExecVSHDisk",               'i', "", HLE_KERNEL_SYSCALL},
-	{0X9D3856CB, &WrapI_V<VshBridgeUnimpl>,            "vshKernelLoadExecVSHMs1",                'i', "", HLE_KERNEL_SYSCALL},
-	{0XD6862A9E, &WrapI_V<VshBridgeUnimpl>,            "vshKernelLoadExecVSHMs2",                'i', "", HLE_KERNEL_SYSCALL},
-	{0X21D4D038, &WrapI_V<VshBridgeUnimpl>,            "vshKernelLoadExecVSHMs3",                'i', "", HLE_KERNEL_SYSCALL},
-	{0XC9626587, &WrapI_V<VshBridgeUnimpl>,            "vshKernelLoadModuleBufferVSH",           'i', "", HLE_KERNEL_SYSCALL},
-	{0X24BC5B26, &WrapI_V<VshBridgeUnimpl>,            "vshKernelLoadModuleVSH",                 'i', "", HLE_KERNEL_SYSCALL},
-	{0XA5628F0D, &WrapI_V<VshBridgeUnimpl>,            "vshKernelLoadModuleVSH",                 'i', "", HLE_KERNEL_SYSCALL},
-	{0XCCD27632, &WrapI_V<VshBridgeUnimpl>,            "vshKernelLoadModuleVSH",                 'i', "", HLE_KERNEL_SYSCALL},
-	{0X1881A5AD, &WrapI_V<VshBridgeUnimpl>,            "vshKernelLoadModuleVSHByID",             'i', "", HLE_KERNEL_SYSCALL},
-	{0X41C54ADF, &WrapI_V<VshBridgeUnimpl>,            "vshKernelLoadModuleVSHByID",             'i', "", HLE_KERNEL_SYSCALL},
-	{0X5E5AF7A2, &WrapI_V<VshBridgeUnimpl>,            "vshKernelSetParamSfo",                   'i', "", HLE_KERNEL_SYSCALL},
-	{0X74DA9D25, &WrapI_V<VshBridgeUnimpl>,            "vshLflashFatfmtStartFatfmt",             'i', "", HLE_KERNEL_SYSCALL},
-	{0X6CAEB765, &WrapI_V<VshBridgeUnimpl>,            "vshMSAudioAuth",                         'i', "", HLE_KERNEL_SYSCALL},
-	{0X53BFD101, &WrapI_V<VshBridgeUnimpl>,            "vshMSAudioCheckICV",                     'i', "", HLE_KERNEL_SYSCALL},
-	{0XE174218C, &WrapI_V<VshBridgeUnimpl>,            "vshMSAudioCheckICVn",                    'i', "", HLE_KERNEL_SYSCALL},
-	{0X7EA32357, &WrapI_V<VshBridgeUnimpl>,            "vshMSAudioDeauth",                       'i', "", HLE_KERNEL_SYSCALL},
-	{0X09EBF066, &WrapI_V<VshBridgeUnimpl>,            "vshMSAudioDecryptFringe",                'i', "", HLE_KERNEL_SYSCALL},
-	{0XD4163117, &WrapI_V<VshBridgeUnimpl>,            "vshMSAudioDecryptTrack",                 'i', "", HLE_KERNEL_SYSCALL},
-	{0X5947F162, &WrapI_V<VshBridgeUnimpl>,            "vshMSAudioEnd",                          'i', "", HLE_KERNEL_SYSCALL},
-	{0X7584D38A, &WrapI_V<VshBridgeUnimpl>,            "vshMSAudioEnd",                          'i', "", HLE_KERNEL_SYSCALL},
-	{0X99299855, &WrapI_V<VshBridgeUnimpl>,            "vshMSAudioEnd",                          'i', "", HLE_KERNEL_SYSCALL},
-	{0XE5DA5E95, &WrapI_V<VshBridgeUnimpl>,            "vshMSAudioEnd",                          'i', "", HLE_KERNEL_SYSCALL},
-	{0XF0A465C2, &WrapI_V<VshBridgeUnimpl>,            "vshMSAudioGetICVEKBVersion",             'i', "", HLE_KERNEL_SYSCALL},
-	{0XCBD84D3F, &WrapI_V<VshBridgeUnimpl>,            "vshMSAudioGetICVInfo",                   'i', "", HLE_KERNEL_SYSCALL},
-	{0XA29B5A33, &WrapI_V<VshBridgeUnimpl>,            "vshMSAudioGetInitialEKB",                'i', "", HLE_KERNEL_SYSCALL},
-	{0X914F3DC8, &WrapI_V<VshBridgeUnimpl>,            "vshMSAudioInit",                         'i', "", HLE_KERNEL_SYSCALL},
-	{0XC04F9353, &WrapI_V<VshBridgeUnimpl>,            "vshMSAudioInit",                         'i', "", HLE_KERNEL_SYSCALL},
-	{0XC40F345F, &WrapI_V<VshBridgeUnimpl>,            "vshMSAudioInit",                         'i', "", HLE_KERNEL_SYSCALL},
-	{0XCE32CBEF, &WrapI_V<VshBridgeUnimpl>,            "vshMSAudioInit",                         'i', "", HLE_KERNEL_SYSCALL},
-	{0X34D51F83, &WrapI_V<VshBridgeUnimpl>,            "vshMSAudioInitFringe",                   'i', "", HLE_KERNEL_SYSCALL},
-	{0X29644970, &WrapI_V<VshBridgeUnimpl>,            "vshMSAudioInitTrack",                    'i', "", HLE_KERNEL_SYSCALL},
-	{0XF1E03935, &WrapI_V<VshBridgeUnimpl>,            "vshMSAudioReadMACList",                  'i', "", HLE_KERNEL_SYSCALL},
-	{0X30E78D9C, &WrapI_V<VshBridgeUnimpl>,            "vshMeBootStart",                         'i', "", HLE_KERNEL_SYSCALL},
-	{0X2C2DB18C, &WrapI_V<VshBridgeUnimpl>,            "vshMgVideoCheckICV",                     'i', "", HLE_KERNEL_SYSCALL},
-	{0X24A3355D, &WrapI_V<VshBridgeUnimpl>,            "vshMgVideoClearMACList",                 'i', "", HLE_KERNEL_SYSCALL},
-	{0X2C88E671, &WrapI_V<VshBridgeUnimpl>,            "vshMgVideoEndMovie",                     'i', "", HLE_KERNEL_SYSCALL},
-	{0XDFA5A40A, &WrapI_V<VshBridgeUnimpl>,            "vshMgVideoFormatICV",                    'i', "", HLE_KERNEL_SYSCALL},
-	{0X4B687C1C, &WrapI_V<VshBridgeUnimpl>,            "vshMgVideoGetDefaultEKB",                'i', "", HLE_KERNEL_SYSCALL},
-	{0X38962187, &WrapI_V<VshBridgeUnimpl>,            "vshMgVideoGetLicenseInfo",               'i', "", HLE_KERNEL_SYSCALL},
-	{0X37EFB3B5, &WrapI_V<VshBridgeUnimpl>,            "vshMgVideoInitMovie",                    'i', "", HLE_KERNEL_SYSCALL},
-	{0X3785D08B, &WrapI_V<VshBridgeUnimpl>,            "vshMgVideoInitTrack",                    'i', "", HLE_KERNEL_SYSCALL},
-	{0XFD47C29F, &WrapI_V<VshBridgeUnimpl>,            "vshMgVideoNetBindLicense",               'i', "", HLE_KERNEL_SYSCALL},
-	{0XB90254A9, &WrapI_V<VshBridgeUnimpl>,            "vshMgVideoUpdateICV",                    'i', "", HLE_KERNEL_SYSCALL},
-	{0X7B3B17DC, &WrapI_V<VshBridgeUnimpl>,            "vshPowerSetWakeupCondition",             'i', "", HLE_KERNEL_SYSCALL},
-	{0XB374EF4C, &WrapI_V<VshBridgeUnimpl>,            "vshPowerSetWakeupCondition",             'i', "", HLE_KERNEL_SYSCALL},
-	{0XC949966C, &WrapI_V<VshBridgeUnimpl>,            "vshPowerSetWakeupCondition",             'i', "", HLE_KERNEL_SYSCALL},
-	{0XC51A6C26, &WrapI_V<VshBridgeUnimpl>,            "vshReceivePowerCallback",                'i', "", HLE_KERNEL_SYSCALL},
-	{0XDB7C3D5A, &WrapI_V<VshBridgeUnimpl>,            "vshRegisterPowerCallback",               'i', "", HLE_KERNEL_SYSCALL},
-	{0XFCFCAF0C, &WrapI_V<VshBridgeUnimpl>,            "vshRtcGetAlarmTick",                     'i', "", HLE_KERNEL_SYSCALL},
-	{0X13299AA5, &WrapI_V<VshBridgeUnimpl>,            "vshRtcSetAlarmTick",                     'i', "", HLE_KERNEL_SYSCALL},
-	{0XD49C57E3, &WrapI_V<VshBridgeUnimpl>,            "vshRtcSetConf",                          'i', "", HLE_KERNEL_SYSCALL},
-	{0X27CD418C, &WrapI_V<VshBridgeUnimpl>,            "vshRtcSetCurrentTick",                   'i', "", HLE_KERNEL_SYSCALL},
-	{0X0543156C, &WrapI_V<VshBridgeUnimpl>,            "vshUmdManTerm",                          'i', "", HLE_KERNEL_SYSCALL},
-	{0X837C457A, &WrapI_V<VshBridgeUnimpl>,            "vshUnregisterPowerCallback",             'i', "", HLE_KERNEL_SYSCALL},
-	{0XAF135135, &WrapI_V<VshBridgeUnimpl>,            "vshVaudioChReserve",                     'i', "", HLE_KERNEL_SYSCALL},
-	{0X81706DA7, &WrapI_V<VshBridgeUnimpl>,            "vshVaudioOutputBlocking",                'i', "", HLE_KERNEL_SYSCALL},
+	{0XEF8229E9, &WrapI_V<VshBridgeUnimpl>,            "vshKernelDipswClear",                    'i', "",       HLE_KERNEL_SYSCALL},
+	{0XCF9DA76A, &WrapI_V<VshBridgeUnimpl>,            "vshKernelDipswSet",                      'i', "",       HLE_KERNEL_SYSCALL},
+	{0X6032E5EE, &WrapI_V<VshBridgeUnimpl>,            "vshKernelExitVSHVSH",                    'i', "",       HLE_KERNEL_SYSCALL},
+	{0X7423151D, &WrapI_V<VshBridgeUnimpl>,            "vshKernelLoadExecBufferVSHUsbWlan",      'i', "",       HLE_KERNEL_SYSCALL},
+	{0X59E6C2E1, &WrapI_V<VshBridgeUnimpl>,            "vshKernelLoadExecBufferVSHUsbWlanDebug", 'i', "",       HLE_KERNEL_SYSCALL},
+	{0XC5B25CA7, &WrapI_V<VshBridgeUnimpl>,            "vshKernelLoadExecVSHDiscDebug",          'i', "",       HLE_KERNEL_SYSCALL},
+	{0X0DCD4377, &WrapI_V<VshBridgeUnimpl>,            "vshKernelLoadExecVSHDiscUpdater",        'i', "",       HLE_KERNEL_SYSCALL},
+	{0X81682A40, &WrapI_V<VshBridgeUnimpl>,            "vshKernelLoadExecVSHDisk",               'i', "",       HLE_KERNEL_SYSCALL},
+	{0X9D3856CB, &WrapI_V<VshBridgeUnimpl>,            "vshKernelLoadExecVSHMs1",                'i', "",       HLE_KERNEL_SYSCALL},
+	{0XD6862A9E, &WrapI_V<VshBridgeUnimpl>,            "vshKernelLoadExecVSHMs2",                'i', "",       HLE_KERNEL_SYSCALL},
+	{0X21D4D038, &WrapI_V<VshBridgeUnimpl>,            "vshKernelLoadExecVSHMs3",                'i', "",       HLE_KERNEL_SYSCALL},
+	{0XC9626587, &WrapI_V<VshBridgeUnimpl>,            "vshKernelLoadModuleBufferVSH",           'i', "",       HLE_KERNEL_SYSCALL},
+	{0X24BC5B26, &WrapI_V<VshBridgeUnimpl>,            "vshKernelLoadModuleVSH",                 'i', "",       HLE_KERNEL_SYSCALL},
+	{0XA5628F0D, &WrapI_V<VshBridgeUnimpl>,            "vshKernelLoadModuleVSH",                 'i', "",       HLE_KERNEL_SYSCALL},
+	{0XCCD27632, &WrapI_V<VshBridgeUnimpl>,            "vshKernelLoadModuleVSH",                 'i', "",       HLE_KERNEL_SYSCALL},
+	{0X1881A5AD, &WrapI_V<VshBridgeUnimpl>,            "vshKernelLoadModuleVSHByID",             'i', "",       HLE_KERNEL_SYSCALL},
+	{0X41C54ADF, &WrapI_V<VshBridgeUnimpl>,            "vshKernelLoadModuleVSHByID",             'i', "",       HLE_KERNEL_SYSCALL},
+	{0X5E5AF7A2, &WrapI_V<VshBridgeUnimpl>,            "vshKernelSetParamSfo",                   'i', "",       HLE_KERNEL_SYSCALL},
+	{0X74DA9D25, &WrapI_V<VshBridgeUnimpl>,            "vshLflashFatfmtStartFatfmt",             'i', "",       HLE_KERNEL_SYSCALL},
+	{0X6CAEB765, &WrapI_V<VshBridgeUnimpl>,            "vshMSAudioAuth",                         'i', "",       HLE_KERNEL_SYSCALL},
+	{0X53BFD101, &WrapI_V<VshBridgeUnimpl>,            "vshMSAudioCheckICV",                     'i', "",       HLE_KERNEL_SYSCALL},
+	{0XE174218C, &WrapI_V<VshBridgeUnimpl>,            "vshMSAudioCheckICVn",                    'i', "",       HLE_KERNEL_SYSCALL},
+	{0X7EA32357, &WrapI_V<VshBridgeUnimpl>,            "vshMSAudioDeauth",                       'i', "",       HLE_KERNEL_SYSCALL},
+	{0X09EBF066, &WrapI_V<VshBridgeUnimpl>,            "vshMSAudioDecryptFringe",                'i', "",       HLE_KERNEL_SYSCALL},
+	{0XD4163117, &WrapI_V<VshBridgeUnimpl>,            "vshMSAudioDecryptTrack",                 'i', "",       HLE_KERNEL_SYSCALL},
+	{0X5947F162, &WrapI_V<VshBridgeUnimpl>,            "vshMSAudioEnd",                          'i', "",       HLE_KERNEL_SYSCALL},
+	{0X7584D38A, &WrapI_V<VshBridgeUnimpl>,            "vshMSAudioEnd",                          'i', "",       HLE_KERNEL_SYSCALL},
+	{0X99299855, &WrapI_V<VshBridgeUnimpl>,            "vshMSAudioEnd",                          'i', "",       HLE_KERNEL_SYSCALL},
+	{0XE5DA5E95, &WrapI_V<VshBridgeUnimpl>,            "vshMSAudioEnd",                          'i', "",       HLE_KERNEL_SYSCALL},
+	{0XF0A465C2, &WrapI_V<VshBridgeUnimpl>,            "vshMSAudioGetICVEKBVersion",             'i', "",       HLE_KERNEL_SYSCALL},
+	{0XCBD84D3F, &WrapI_V<VshBridgeUnimpl>,            "vshMSAudioGetICVInfo",                   'i', "",       HLE_KERNEL_SYSCALL},
+	{0XA29B5A33, &WrapI_V<VshBridgeUnimpl>,            "vshMSAudioGetInitialEKB",                'i', "",       HLE_KERNEL_SYSCALL},
+	{0X914F3DC8, &WrapI_V<VshBridgeUnimpl>,            "vshMSAudioInit",                         'i', "",       HLE_KERNEL_SYSCALL},
+	{0XC04F9353, &WrapI_V<VshBridgeUnimpl>,            "vshMSAudioInit",                         'i', "",       HLE_KERNEL_SYSCALL},
+	{0XC40F345F, &WrapI_V<VshBridgeUnimpl>,            "vshMSAudioInit",                         'i', "",       HLE_KERNEL_SYSCALL},
+	{0XCE32CBEF, &WrapI_V<VshBridgeUnimpl>,            "vshMSAudioInit",                         'i', "",       HLE_KERNEL_SYSCALL},
+	{0X34D51F83, &WrapI_V<VshBridgeUnimpl>,            "vshMSAudioInitFringe",                   'i', "",       HLE_KERNEL_SYSCALL},
+	{0X29644970, &WrapI_V<VshBridgeUnimpl>,            "vshMSAudioInitTrack",                    'i', "",       HLE_KERNEL_SYSCALL},
+	{0XF1E03935, &WrapI_V<VshBridgeUnimpl>,            "vshMSAudioReadMACList",                  'i', "",       HLE_KERNEL_SYSCALL},
+	{0X30E78D9C, &WrapI_V<VshBridgeUnimpl>,            "vshMeBootStart",                         'i', "",       HLE_KERNEL_SYSCALL},
+	{0X2C2DB18C, &WrapI_V<VshBridgeUnimpl>,            "vshMgVideoCheckICV",                     'i', "",       HLE_KERNEL_SYSCALL},
+	{0X24A3355D, &WrapI_V<VshBridgeUnimpl>,            "vshMgVideoClearMACList",                 'i', "",       HLE_KERNEL_SYSCALL},
+	{0X2C88E671, &WrapI_V<VshBridgeUnimpl>,            "vshMgVideoEndMovie",                     'i', "",       HLE_KERNEL_SYSCALL},
+	{0XDFA5A40A, &WrapI_V<VshBridgeUnimpl>,            "vshMgVideoFormatICV",                    'i', "",       HLE_KERNEL_SYSCALL},
+	{0X4B687C1C, &WrapI_V<VshBridgeUnimpl>,            "vshMgVideoGetDefaultEKB",                'i', "",       HLE_KERNEL_SYSCALL},
+	{0X38962187, &WrapI_V<VshBridgeUnimpl>,            "vshMgVideoGetLicenseInfo",               'i', "",       HLE_KERNEL_SYSCALL},
+	{0X37EFB3B5, &WrapI_V<VshBridgeUnimpl>,            "vshMgVideoInitMovie",                    'i', "",       HLE_KERNEL_SYSCALL},
+	{0X3785D08B, &WrapI_V<VshBridgeUnimpl>,            "vshMgVideoInitTrack",                    'i', "",       HLE_KERNEL_SYSCALL},
+	{0XFD47C29F, &WrapI_V<VshBridgeUnimpl>,            "vshMgVideoNetBindLicense",               'i', "",       HLE_KERNEL_SYSCALL},
+	{0XB90254A9, &WrapI_V<VshBridgeUnimpl>,            "vshMgVideoUpdateICV",                    'i', "",       HLE_KERNEL_SYSCALL},
+	{0X7B3B17DC, &WrapI_V<VshBridgeUnimpl>,            "vshPowerSetWakeupCondition",             'i', "",       HLE_KERNEL_SYSCALL},
+	{0XB374EF4C, &WrapI_V<VshBridgeUnimpl>,            "vshPowerSetWakeupCondition",             'i', "",       HLE_KERNEL_SYSCALL},
+	{0XC949966C, &WrapI_V<VshBridgeUnimpl>,            "vshPowerSetWakeupCondition",             'i', "",       HLE_KERNEL_SYSCALL},
+	{0XC51A6C26, &WrapI_V<VshBridgeUnimpl>,            "vshReceivePowerCallback",                'i', "",       HLE_KERNEL_SYSCALL},
+	{0XDB7C3D5A, &WrapI_V<VshBridgeUnimpl>,            "vshRegisterPowerCallback",               'i', "",       HLE_KERNEL_SYSCALL},
+	{0XFCFCAF0C, &WrapI_V<VshBridgeUnimpl>,            "vshRtcGetAlarmTick",                     'i', "",       HLE_KERNEL_SYSCALL},
+	{0X13299AA5, &WrapI_V<VshBridgeUnimpl>,            "vshRtcSetAlarmTick",                     'i', "",       HLE_KERNEL_SYSCALL},
+	{0XD49C57E3, &WrapI_V<VshBridgeUnimpl>,            "vshRtcSetConf",                          'i', "",       HLE_KERNEL_SYSCALL},
+	{0X27CD418C, &WrapI_V<VshBridgeUnimpl>,            "vshRtcSetCurrentTick",                   'i', "",       HLE_KERNEL_SYSCALL},
+	{0X0543156C, &WrapI_V<VshBridgeUnimpl>,            "vshUmdManTerm",                          'i', "",       HLE_KERNEL_SYSCALL},
+	{0X837C457A, &WrapI_V<VshBridgeUnimpl>,            "vshUnregisterPowerCallback",             'i', "",       HLE_KERNEL_SYSCALL},
+	{0XAF135135, &WrapI_V<VshBridgeUnimpl>,            "vshVaudioChReserve",                     'i', "",       HLE_KERNEL_SYSCALL},
+	{0X81706DA7, &WrapI_V<VshBridgeUnimpl>,            "vshVaudioOutputBlocking",                'i', "",       HLE_KERNEL_SYSCALL},
 };
 
 void Register_sceVshBridge() {
