@@ -5,10 +5,10 @@ The XMB (XrossMediaBar) is the PSP's system software. Its main module is
 PPSSPP has the beginnings of a boot path for it. Against a real 6.61 dump it starts `vshmain`,
 `paf`, `common_gui` and `common_util`, brings up the `SCE_VSH_GRAPHICS` thread, reads its settings
 out of the registry, loads the system fonts, opens the XMB's own resource files
-(`opening_plugin.rco`, `system_plugin.rco` and its `_bg`/`_fg` companions) and submits GE display
-lists continuously without faulting. Where it stops now is `vshKernelLoadModuleVSH`: it is a
-name-only stub, so none of the `*_plugin.prx` modules ever load and nothing is ever drawn.
-**It does not reach a usable XMB** — see [What's still missing](#whats-still-missing).
+(`opening_plugin.rco`, `system_plugin.rco` and its `_bg`/`_fg` companions), loads and starts
+`opening_plugin.prx`, `impose_plugin.prx` and `mpeg_vsh.prx`, and submits GE display lists
+continuously without faulting. Nothing is presented, though — `sceDisplaySetFramebuf` is never
+called. **It does not reach a usable XMB** — see [What's still missing](#whats-still-missing).
 
 Nothing in this repo contains PSP firmware, and PPSSPP neither ships nor downloads it. Running the
 VSH requires files you supply yourself, from a PSP you own or from an official Sony update file.
@@ -217,21 +217,29 @@ until it asked for them: `sceRtcGetAlarmTick`, `sceRtcIsAlarmed`, `sceRtcRegiste
 cross-referencing the `Importing <name>` lines in a boot log against the `HLEFunction` tables,
 which is a few minutes of scripting and finds them all at once.
 
-**The plugins never load.** `vshKernelLoadModuleVSH` is one of the name-only `sceVshBridge` entries,
-so it returns 0 without doing anything — and 0 is a plausible-looking module ID, which the VSH hands
-straight to `sceKernelStartModule`, getting `0x8002012e` (`UNKNOWN_MODULE`) back. That is the current
-frontier: until it actually loads the requested `flash0:/vsh/module/*_plugin.prx` and returns its
-real `SceUID`, the XMB has its resources open and its graphics thread running but no code to draw
-anything. Note it is exported under three different NIDs on 6.61 (`0x24BC5B26`, `0xA5628F0D`,
-`0xCCD27632`), plus two more for `vshKernelLoadModuleVSHByID`; the argument lists are not in
-PSPLibDoc, so they have to come off the call sites.
+**Plugins load through `vshKernelLoadModuleVSH`.** The VSH does not call `ModuleMgr` itself; it goes
+through this bridge export, which takes exactly `sceKernelLoadModule`'s arguments and is now
+forwarded to it. The argument list is not in PSPLibDoc — it was read off the call site, where
+`paf.prx` asks for `flash0:/vsh/module/opening_plugin.prx` with flags 0 and an `SceKernelLMOption`
+that sets only position and access, no partition IDs. It is exported under three NIDs on 6.61
+(`0x24BC5B26`, `0xA5628F0D`, `0xCCD27632`); `vshKernelLoadModuleVSHByID` has two more and is still a
+stub, because nothing has called it yet. With this in place a boot loads and starts
+`opening_plugin.prx`, `impose_plugin.prx` and `flash0:/kd/mpeg_vsh.prx`.
 
-What is still genuinely absent is the six libraries the XMB links against but has not called at any
-point in a boot so far (listed above). They are deliberately left alone for now: stubbing a function
-whose purpose is unknown means guessing its contract, and for at least one — `sceResmgr` looks like the
-resource decryptor — "return success without doing anything" hands the caller undecrypted data,
-which is worse than an honest failure. Add them once a log shows something calling them, so the call
-site says what the return value is for.
+Two things the plugins then poll every frame, thousands of times per boot, are the obvious next
+candidates: `scePowerIsSuspendRequired`, which is still a `nullptr` entry in `scePower.cpp` (so it
+logs `Unimplemented HLE function` and never writes anything), and `vshImposeChanges`, a name-only
+`sceVshBridge` entry. Note also `sceKernelLoadModule: unsupported options` in the log — the
+`SceKernelLMOption` the VSH passes is accepted but its position/access fields are discarded, which
+ties into the privilege-model gap below.
+
+Of the six libraries the XMB links against, **`sceResmgr` is now actually called** — one
+`0x9dc14891` from `vsh_module`, right after a resource file is closed. That is the trigger this
+document asked for, but it needs care rather than a quick stub: `sceResmgr` looks like the resource
+decryptor, so "return success without doing anything" hands the caller undecrypted data, which is
+worse than an honest failure. Work out what the call site does with the result first. The other five
+still have no call site at all and are deliberately left alone, for the same reason — stubbing a
+function whose purpose is unknown means guessing its contract.
 
 Adding these follows the normal recipe in `AGENTS.md`. For NIDs and names, use
 [PSPLibDoc](https://github.com/pspdev/psplibdoc) (GPL-2.0) — it has per-firmware exports for every

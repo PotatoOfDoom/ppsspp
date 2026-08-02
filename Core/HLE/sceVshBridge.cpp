@@ -37,9 +37,9 @@
 //
 // Calls that map onto something PPSSPP implements are wired through to it with hleCall, so there is
 // exactly one implementation of each: ctrl reads and sampling mode, sceIoDevctl/sceIoIoctl,
-// chkreg (sceChkreg.cpp), ID storage lookups (sceIdStorage.cpp) and the impose params
-// (sceImpose.cpp). The rest report UNIMPL, so the log tells you what the VSH actually asked for
-// instead of trapping anonymously. See docs/XMB.md.
+// module loading (sceKernelModule.cpp), chkreg (sceChkreg.cpp), ID storage lookups
+// (sceIdStorage.cpp) and the impose params (sceImpose.cpp). The rest report UNIMPL, so the log
+// tells you what the VSH actually asked for instead of trapping anonymously. See docs/XMB.md.
 
 #include "Core/HLE/HLE.h"
 #include "Core/HLE/ErrorCodes.h"
@@ -49,6 +49,7 @@
 #include "Core/HLE/sceIdStorage.h"
 #include "Core/HLE/sceImpose.h"
 #include "Core/HLE/sceIo.h"
+#include "Core/HLE/sceKernelModule.h"
 #include "Core/HLE/sceVshBridge.h"
 
 static int VshBridgeUnimpl() {
@@ -92,6 +93,16 @@ static u32 vshIoDevctl(const char *name, int cmd, u32 argAddr, int argLen, u32 o
 
 static u32 vshIoIoctl(u32 id, u32 cmd, u32 indataPtr, u32 inlen, u32 outdataPtr, u32 outlen) {
 	return hleCall(IoFileMgrForKernel, u32, sceIoIoctl, id, cmd, indataPtr, inlen, outdataPtr, outlen);
+}
+
+// The VSH loads its plugins through here rather than calling ModuleMgr itself. The argument list is
+// not in PSPLibDoc; it was read off the call site, where paf.prx asks for
+// "flash0:/vsh/module/opening_plugin.prx" with flags 0 and an SceKernelLMOption that sets only
+// position and access, no partition IDs - i.e. exactly sceKernelLoadModule's, so hand it straight
+// over. A name-only stub is especially bad here: it returns 0, the VSH takes that for the module ID
+// and passes it to sceKernelStartModule, which then fails with UNKNOWN_MODULE far from the cause.
+static u32 vshKernelLoadModuleVSH(const char *name, u32 flags, u32 optionAddr) {
+	return hleCall(ModuleMgrForKernel, u32, sceKernelLoadModule, name, flags, optionAddr);
 }
 
 static int vshChkregGetPsCode(u32 psCodePtr) {
@@ -161,9 +172,9 @@ const HLEFunction sceVshBridge[] = {
 	{0XD6862A9E, &WrapI_V<VshBridgeUnimpl>,            "vshKernelLoadExecVSHMs2",                'i', "",       HLE_KERNEL_SYSCALL},
 	{0X21D4D038, &WrapI_V<VshBridgeUnimpl>,            "vshKernelLoadExecVSHMs3",                'i', "",       HLE_KERNEL_SYSCALL},
 	{0XC9626587, &WrapI_V<VshBridgeUnimpl>,            "vshKernelLoadModuleBufferVSH",           'i', "",       HLE_KERNEL_SYSCALL},
-	{0X24BC5B26, &WrapI_V<VshBridgeUnimpl>,            "vshKernelLoadModuleVSH",                 'i', "",       HLE_KERNEL_SYSCALL},
-	{0XA5628F0D, &WrapI_V<VshBridgeUnimpl>,            "vshKernelLoadModuleVSH",                 'i', "",       HLE_KERNEL_SYSCALL},
-	{0XCCD27632, &WrapI_V<VshBridgeUnimpl>,            "vshKernelLoadModuleVSH",                 'i', "",       HLE_KERNEL_SYSCALL},
+	{0X24BC5B26, &WrapU_CUU<vshKernelLoadModuleVSH>,   "vshKernelLoadModuleVSH",                 'x', "sxx",    HLE_KERNEL_SYSCALL},
+	{0XA5628F0D, &WrapU_CUU<vshKernelLoadModuleVSH>,   "vshKernelLoadModuleVSH",                 'x', "sxx",    HLE_KERNEL_SYSCALL},
+	{0XCCD27632, &WrapU_CUU<vshKernelLoadModuleVSH>,   "vshKernelLoadModuleVSH",                 'x', "sxx",    HLE_KERNEL_SYSCALL},
 	{0X1881A5AD, &WrapI_V<VshBridgeUnimpl>,            "vshKernelLoadModuleVSHByID",             'i', "",       HLE_KERNEL_SYSCALL},
 	{0X41C54ADF, &WrapI_V<VshBridgeUnimpl>,            "vshKernelLoadModuleVSHByID",             'i', "",       HLE_KERNEL_SYSCALL},
 	{0X5E5AF7A2, &WrapI_V<VshBridgeUnimpl>,            "vshKernelSetParamSfo",                   'i', "",       HLE_KERNEL_SYSCALL},
