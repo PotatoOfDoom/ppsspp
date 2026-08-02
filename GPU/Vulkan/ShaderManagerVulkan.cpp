@@ -375,7 +375,9 @@ enum class VulkanCacheDetectFlags {
 };
 
 #define CACHE_HEADER_MAGIC 0xff51f420 
-#define CACHE_VERSION 59
+// 60: ub_baseStr grew VR uniforms (u_proj_lens, u_scaleX, u_scaleY), so previously cached shaders
+// were generated from a different uniform buffer declaration.
+#define CACHE_VERSION 60
 
 struct VulkanCacheHeader {
 	uint32_t magic;
