@@ -498,7 +498,10 @@ bool GenerateVertexShader(const VShaderID &id, char *buffer, const ShaderLanguag
 			if (PSP_CoreParameter().compat.vrCompat().UnitsPerMeter > 0) {
 				scale = PSP_CoreParameter().compat.vrCompat().UnitsPerMeter;
 			}
-			WRITE(p, "  viewPos.x += %f * float(gl_ViewIndex * 2 - 1);\n", scale * ipd * 0.5);
+			// View 0 is the left eye. Moving that camera to the left shifts everything it sees to
+			// the right in view space, so the left eye gets the positive offset, not the negative
+			// one - swapping these makes near geometry read as cross-eyed.
+			WRITE(p, "  viewPos.x += %f * float(1 - gl_ViewIndex * 2);\n", scale * ipd * 0.5);
 		}
 
 		// Final view and projection transforms.
