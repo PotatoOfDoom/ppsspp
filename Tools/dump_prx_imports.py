@@ -15,6 +15,15 @@ own HLE tables in Core/HLE/*.cpp. In directory mode it ranks the missing
 libraries by how many modules want them, which is the work list for making
 something like the XMB run - see docs/XMB.md.
 
+Three states, and the difference matters:
+  * the library isn't in PPSSPP at all
+  * the library is there but the NID isn't in its table
+  * the NID is in the table with a nullptr implementation
+The last one is the easiest to miss and the nastiest to debug: a nullptr entry
+returns SCE_KERNEL_ERROR_LIBRARY_NOT_YET_LINKED and never writes the function's
+output parameters, so the caller reads whatever was on its stack and dies
+somewhere else entirely.
+
 Nothing here needs the firmware itself to be shared: the output is library
 names, NIDs and counts.
 
@@ -162,7 +171,8 @@ def load_ppsspp_tables(repo_root):
     hle_dir = os.path.join(repo_root, "Core", "HLE")
     if not os.path.isdir(hle_dir):
         return None
-    entry_re = re.compile(r'\{\s*(0[xX][0-9a-fA-F]{8})\s*,[^,]*,\s*"([A-Za-z_0-9]+)"')
+    # The middle field is the implementation - a &WrapX_YYY<func>, or nullptr for a name-only entry.
+    entry_re = re.compile(r'\{\s*(0[xX][0-9a-fA-F]{8})\s*,\s*([^,]*?)\s*,\s*"([A-Za-z_0-9]+)"')
     table_re = re.compile(r'HLEFunction\s+(\w+)\s*\[\s*\]\s*=\s*\{(.*?)^\};', re.S | re.M)
     reg_re = re.compile(r'RegisterHLEModule\(\s*"([^"]+)"\s*,[^,]*,\s*(\w+)\s*\)')
     # HLETables.cpp also has a static moduleList[] of {"name", ARRAY_SIZE(t), t} (or just {"name"}
@@ -179,7 +189,7 @@ def load_ppsspp_tables(repo_root):
         except OSError:
             continue
         for var, body in table_re.findall(src):
-            tables[var] = {int(n, 16): name for n, name in entry_re.findall(body)}
+            tables[var] = {int(n, 16): (name, impl != "nullptr") for n, impl, name in entry_re.findall(body)}
         for lib, var in reg_re.findall(src):
             libs[lib] = var
         for body in modlist_re.findall(src):
@@ -190,7 +200,9 @@ def load_ppsspp_tables(repo_root):
 
 
 def analyze(path, tables):
-    """Returns (module name, attrs, [(lib, [(nid, funcname|None)], lib_known)]) or a string on failure."""
+    """Returns (module name, attrs, [(lib, [(nid, funcname|None, implemented)], lib_known)]), or a
+    string on failure. funcname is None when the NID isn't in the library's table at all;
+    implemented is False for a nullptr table entry."""
     try:
         data = open(path, "rb").read(64 * 1024 * 1024)
     except OSError as e:
@@ -209,7 +221,11 @@ def analyze(path, tables):
     result = []
     for lib, nids in imports:
         known = tables.get(lib) if tables is not None else None
-        result.append((lib, [(n, (known or {}).get(n)) for n in nids], known is not None))
+        entries = []
+        for n in nids:
+            funcname, implemented = (known or {}).get(n, (None, False))
+            entries.append((n, funcname, implemented))
+        result.append((lib, entries, known is not None))
     return name, attrs, result
 
 
@@ -221,25 +237,47 @@ def attr_str(attrs):
     return "user"
 
 
-def print_module(path, info, missing_only):
+def print_module(path, info, missing_only, checked=True):
+    """checked is False under --no-cross-reference, where we know nothing about what PPSSPP has and
+    must not imply that everything is missing."""
     name, attrs, libs = info
     total = sum(len(nids) for _l, nids, _k in libs)
+    lines = []
+    for lib, nids, lib_known in sorted(libs):
+        unknown = [n for n, fn, _i in nids if fn is None]
+        stubs = [n for n, fn, impl in nids if fn is not None and not impl]
+        if not checked:
+            state = "not checked"
+        elif not lib_known:
+            state = "library NOT in PPSSPP"
+        elif unknown or stubs:
+            bits = []
+            if unknown:
+                bits.append(f"{len(unknown)} unknown NID(s)")
+            if stubs:
+                bits.append(f"{len(stubs)} nullptr")
+            state = f"{len(nids)} imports, " + ", ".join(bits)
+        else:
+            state = "all implemented"
+        if missing_only and (not checked or (lib_known and not unknown and not stubs)):
+            continue
+        lines.append(f"    {lib:<28} {len(nids):>4} imports   [{state}]")
+        if not checked:
+            continue
+        for n, fn, impl in nids:
+            if fn is None:
+                lines.append(f"        {n:#010x}  <NID not in PPSSPP's table>")
+            elif not impl:
+                lines.append(f"        {n:#010x}  {fn}: nullptr entry, returns LIBRARY_NOT_YET_LINKED")
+
+    # Under --missing-only a module with nothing to report is just noise, so drop it entirely
+    # rather than printing a bare header.
+    if missing_only and not lines:
+        return
     print(f"\n{path}")
     print(f"  module '{name}', attr {attr_str(attrs)}, {len(libs)} libraries, {total} imports")
-    for lib, nids, lib_known in sorted(libs):
-        unknown = [n for n, fn in nids if fn is None]
-        if not lib_known:
-            state = "library NOT in PPSSPP"
-        elif unknown:
-            state = f"{len(nids) - len(unknown)}/{len(nids)} known"
-        else:
-            state = "all known"
-        if missing_only and lib_known and not unknown:
-            continue
-        print(f"    {lib:<28} {len(nids):>4} imports   [{state}]")
-        for n, fn in nids:
-            if fn is None:
-                print(f"        {n:#010x}  <not implemented>")
+    for line in lines:
+        print(line)
 
 
 def main():
@@ -248,7 +286,8 @@ def main():
         epilog="See docs/XMB.md. Modules must be decrypted first.")
     ap.add_argument("target", help="a .prx/.elf module, or a directory to walk")
     ap.add_argument("--summary", action="store_true", help="aggregate over a directory and rank what's missing")
-    ap.add_argument("--missing-only", action="store_true", help="only show libraries with unimplemented imports")
+    ap.add_argument("--missing-only", action="store_true",
+                    help="only show libraries with unknown NIDs or nullptr entries")
     ap.add_argument("--repo", help="PPSSPP source root, for cross-referencing "
                                    "(default: found by walking up from this script and the cwd)")
     ap.add_argument("--no-cross-reference", action="store_true",
@@ -276,7 +315,7 @@ def main():
         if info is None:
             print(f"{args.target}: not a PSP module", file=sys.stderr)
             sys.exit(1)
-        print_module(args.target, info, args.missing_only)
+        print_module(args.target, info, args.missing_only, checked=tables is not None)
         return
 
     if not os.path.isdir(args.target):
@@ -298,19 +337,22 @@ def main():
 
     if not args.summary:
         for path, info in modules:
-            print_module(path, info, args.missing_only)
+            print_module(path, info, args.missing_only, checked=tables is not None)
 
-    # missing library -> (modules that want it, total imports, unresolved NIDs)
+    # missing library -> (modules that want it, total imports, unresolved NIDs, nullptr NIDs)
     missing = {}
     for _path, (_n, _a, libs) in modules:
         for lib, nids, lib_known in libs:
-            unresolved = {n for n, fn in nids if fn is None}
-            if lib_known and not unresolved:
+            unresolved = {n for n, fn, _i in nids if fn is None}
+            stubs = {n for n, fn, impl in nids if fn is not None and not impl}
+            if lib_known and not unresolved and not stubs:
                 continue
-            m = missing.setdefault(lib, {"modules": 0, "imports": 0, "nids": set(), "present": lib_known})
+            m = missing.setdefault(lib, {"modules": 0, "imports": 0, "nids": set(), "stubs": set(),
+                                         "present": lib_known})
             m["modules"] += 1
             m["imports"] += len(nids)
             m["nids"] |= unresolved
+            m["stubs"] |= stubs
 
     label = "incomplete" if tables is not None else "imported (not checked against PPSSPP)"
     print(f"\n{'=' * 78}\n{len(modules)} module(s) scanned, {len(missing)} library/libraries {label}")
@@ -325,13 +367,18 @@ def main():
         if len(skipped) > 10:
             print(f"  ... and {len(skipped) - 10} more")
     if missing:
-        print(f"\n{'library':<30}{'modules':>8}{'imports':>9}{'missing NIDs':>14}  state")
+        print(f"\n{'library':<30}{'modules':>8}{'imports':>9}{'missing':>9}{'nullptr':>9}  state")
         for lib, m in sorted(missing.items(), key=lambda kv: (-kv[1]["modules"], -kv[1]["imports"])):
             if tables is None:
                 state = "not checked"
+            elif not m["present"]:
+                state = "NOT IMPLEMENTED"
+            elif m["nids"]:
+                state = "partial"
             else:
-                state = "partial" if m["present"] else "NOT IMPLEMENTED"
-            print(f"{lib:<30}{m['modules']:>8}{m['imports']:>9}{len(m['nids']):>14}  {state}")
+                state = "nullptr entries only"
+            print(f"{lib:<30}{m['modules']:>8}{m['imports']:>9}{len(m['nids']):>9}"
+                  f"{len(m['stubs']):>9}  {state}")
     else:
         print("\nEverything these modules import is implemented.")
 
