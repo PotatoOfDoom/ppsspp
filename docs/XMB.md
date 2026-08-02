@@ -6,9 +6,20 @@ PPSSPP has the beginnings of a boot path for it. Against a real 6.61 dump it sta
 `paf`, `common_gui` and `common_util`, brings up the `SCE_VSH_GRAPHICS` thread, reads its settings
 out of the registry, loads the system fonts, opens the XMB's own resource files
 (`opening_plugin.rco`, `system_plugin.rco` and its `_bg`/`_fg` companions), loads and starts
-`opening_plugin.prx`, `impose_plugin.prx` and `mpeg_vsh.prx`, and submits GE display lists
-continuously without faulting. Nothing is presented, though — `sceDisplaySetFramebuf` is never
-called. **It does not reach a usable XMB** — see [What's still missing](#whats-still-missing).
+`opening_plugin.prx`, `impose_plugin.prx` and `mpeg_vsh.prx`, and **draws**: it sets the display
+mode, renders through the GE and flips between two framebuffers in VRAM for as long as it is left
+running. What comes out is the XMB's wave background with the clock and the battery indicator on it,
+which is a real frame from the real firmware, not something PPSSPP draws.
+
+What is *not* there is the XrossMediaBar itself — the icon rows are drawn by `system_plugin.prx`,
+which never gets loaded, even though the VSH opens its `.rco` resources. **So it does not reach a
+usable XMB** — see [What's still missing](#whats-still-missing).
+
+To see the frame without a display, pause the emulator over the WebSocket debugger and read the
+framebuffer straight out of VRAM — it is at `0x04000000`/`0x04088000`, 480x272, stride 512, pixel
+format 3 (8888), the addresses the VSH passes to `sceDisplaySetFrameBuf`. `gpu.buffer.screenshot`
+answers `Could not download output` on a headless build, with either the software or the Vulkan
+backend.
 
 Nothing in this repo contains PSP firmware, and PPSSPP neither ships nor downloads it. Running the
 VSH requires files you supply yourself, from a PSP you own or from an official Sony update file.
@@ -227,6 +238,13 @@ that sets only position and access, no partition IDs. It is exported under three
 (`0x24BC5B26`, `0xA5628F0D`, `0xCCD27632`); `vshKernelLoadModuleVSHByID` has two more and is still a
 stub, because nothing has called it yet. With this in place a boot loads and starts
 `opening_plugin.prx`, `impose_plugin.prx` and `flash0:/kd/mpeg_vsh.prx`.
+
+**`system_plugin.prx` is the one that matters next.** It draws the XrossMediaBar itself — the icon
+rows — and the VSH opens its resources (`system_plugin.rco`, `system_plugin_bg.rco`,
+`system_plugin_fg.rco`) but never asks to load the module, so the frame that comes out has the
+background, the clock and the battery on it and nothing else. Whatever decides to load it is the
+thing to chase: it is not blocked on `vshKernelLoadModuleVSH` any more, so it is a decision the VSH
+makes and has not.
 
 The plugins then poll two things every frame — about 17,000 calls each in a minute of running — and
 they are worth understanding because they are opposite cases. `scePowerIsSuspendRequired` was a
