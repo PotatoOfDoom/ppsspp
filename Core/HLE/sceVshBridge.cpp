@@ -83,12 +83,15 @@ static u32 vshCtrlSetSamplingMode(u32 mode) {
 	return hleCall(sceCtrl, u32, sceCtrlSetSamplingMode, mode);
 }
 
+// The module name hleCall takes is looked up in the HLE tables, so it has to be the name the
+// function is actually registered under - there is no module called "sceIo". These are the
+// kernel-side entry points, which is what a bridge call is.
 static u32 vshIoDevctl(const char *name, int cmd, u32 argAddr, int argLen, u32 outPtr, int outLen) {
-	return hleCall(sceIo, u32, sceIoDevctl, name, cmd, argAddr, argLen, outPtr, outLen);
+	return hleCall(IoFileMgrForKernel, u32, sceIoDevctl, name, cmd, argAddr, argLen, outPtr, outLen);
 }
 
 static u32 vshIoIoctl(u32 id, u32 cmd, u32 indataPtr, u32 inlen, u32 outdataPtr, u32 outlen) {
-	return hleCall(sceIo, u32, sceIoIoctl, id, cmd, indataPtr, inlen, outdataPtr, outlen);
+	return hleCall(IoFileMgrForKernel, u32, sceIoIoctl, id, cmd, indataPtr, inlen, outdataPtr, outlen);
 }
 
 static int vshChkregGetPsCode(u32 psCodePtr) {

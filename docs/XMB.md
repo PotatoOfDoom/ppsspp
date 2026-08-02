@@ -2,11 +2,13 @@
 
 The XMB (XrossMediaBar) is the PSP's system software. Its main module is
 `flash0:/vsh/module/vshmain.prx`, and internally it's usually called the VSH ("Visual Shell").
-PPSSPP has the beginnings of a boot path for it. Against a real 6.61 dump it gets as far as
-starting `vshmain`, `paf`, `common_gui` and `common_util`, bringing up the `SCE_VSH_GRAPHICS`
-thread, reading its settings out of the registry, loading the system fonts and submitting GE
-display lists — then dies on a bad pointer. **It does not reach a usable XMB** — see
-[What's still missing](#whats-still-missing).
+PPSSPP has the beginnings of a boot path for it. Against a real 6.61 dump it starts `vshmain`,
+`paf`, `common_gui` and `common_util`, brings up the `SCE_VSH_GRAPHICS` thread, reads its settings
+out of the registry, loads the system fonts, opens the XMB's own resource files
+(`opening_plugin.rco`, `system_plugin.rco` and its `_bg`/`_fg` companions) and submits GE display
+lists continuously without faulting. Where it stops now is `vshKernelLoadModuleVSH`: it is a
+name-only stub, so none of the `*_plugin.prx` modules ever load and nothing is ever drawn.
+**It does not reach a usable XMB** — see [What's still missing](#whats-still-missing).
 
 Nothing in this repo contains PSP firmware, and PPSSPP neither ships nor downloads it. Running the
 VSH requires files you supply yourself, from a PSP you own or from an official Sony update file.
@@ -215,9 +217,18 @@ until it asked for them: `sceRtcGetAlarmTick`, `sceRtcIsAlarmed`, `sceRtcRegiste
 cross-referencing the `Importing <name>` lines in a boot log against the `HLEFunction` tables,
 which is a few minutes of scripting and finds them all at once.
 
-What is still genuinely absent is the six libraries the XMB links against but had not called by the
-time it crashed (listed above). They are deliberately left alone for now: stubbing a function whose
-purpose is unknown means guessing its contract, and for at least one — `sceResmgr` looks like the
+**The plugins never load.** `vshKernelLoadModuleVSH` is one of the name-only `sceVshBridge` entries,
+so it returns 0 without doing anything — and 0 is a plausible-looking module ID, which the VSH hands
+straight to `sceKernelStartModule`, getting `0x8002012e` (`UNKNOWN_MODULE`) back. That is the current
+frontier: until it actually loads the requested `flash0:/vsh/module/*_plugin.prx` and returns its
+real `SceUID`, the XMB has its resources open and its graphics thread running but no code to draw
+anything. Note it is exported under three different NIDs on 6.61 (`0x24BC5B26`, `0xA5628F0D`,
+`0xCCD27632`), plus two more for `vshKernelLoadModuleVSHByID`; the argument lists are not in
+PSPLibDoc, so they have to come off the call sites.
+
+What is still genuinely absent is the six libraries the XMB links against but has not called at any
+point in a boot so far (listed above). They are deliberately left alone for now: stubbing a function
+whose purpose is unknown means guessing its contract, and for at least one — `sceResmgr` looks like the
 resource decryptor — "return success without doing anything" hands the caller undecrypted data,
 which is worse than an honest failure. Add them once a log shows something calling them, so the call
 site says what the return value is for.
@@ -313,7 +324,7 @@ without moving firmware around. Modules have to be decrypted first.
   table address, so a loop bound was read out of an unrelated float table as 0x3F666666 (`0.9f`) and
   the loop walked off the end of a 1-element array. It looks like anything but a relocation problem:
   no error, no stub, identical on every run. If a pointer is wrong but *stable*, compare the
-  disassembly of the loaded code against the module on disk before hunting for a missing function -
+  disassembly of the loaded code against the module on disk before hunting for a missing function —
   `memory.disasm` over the WebSocket debugger shows the relocated instruction, which is the one that
   matters.
 - Watch for `no module provides library` lines at boot — that's the definitive list of what's
