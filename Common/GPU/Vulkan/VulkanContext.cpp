@@ -1452,6 +1452,19 @@ bool VulkanContext::InitSwapchain(VkPresentModeKHR desiredPresentMode) {
 		INFO_LOG(Log::G3D, "Swapchain already exists, recreating...");
 	}
 
+	if (IsVRVulkanRenderer()) {
+		// In VR we render to the OpenXR swapchains and never present the window surface, so a
+		// swapchain for it would go unused. Worse, once the OpenXR session owns the window the
+		// runtime has taken the surface over, and vkCreateSwapchainKHR fails outright with
+		// VK_ERROR_SURFACE_LOST_KHR (observed on Quest 3), taking the whole render loop down.
+		// Fake it the same way the minimized case below does: zero extent makes HasRealSwapchain()
+		// false, which is what gates the swapchain-image dependent setup in CreateBackbuffers().
+		INFO_LOG(Log::G3D, "VR: Not creating a window swapchain - rendering to the OpenXR swapchains instead.");
+		swapChainExtent_ = {};
+		swapchainInited_ = true;
+		return true;
+	}
+
 	VkResult res = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical_devices_[physical_device_], surface_, &surfCapabilities_);
 	if (res == VK_ERROR_SURFACE_LOST_KHR) {
 		// Not much to do.
