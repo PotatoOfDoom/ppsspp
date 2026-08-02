@@ -939,9 +939,23 @@ bool GenerateVertexShader(const VShaderID &id, char *buffer, const ShaderLanguag
 	WRITE(p, "  %sgl_Position = outPos;\n", compat.vsOutPrefix);
 
 	if (gstate_c.Use(GPU_USE_VIRTUAL_REALITY)) {
-		// Z correction for the depth buffer
+		// Z correction for the depth buffer.
+		//
+		// In VR, outPos comes from the lens projection, so its Z is not the depth the game asked
+		// for - we have to take Z from orgPos (the PSP's own projection) instead. But it has to
+		// end up in the same space the non-VR path produces, or depth testing goes to pieces.
+		//
+		// The catch is that outPos has been through the viewport transform above
+		// ("outPos.xyz = outPos.xyz * u_vpScale * (1/outPos.w) + u_vpOffset"), so by the time
+		// the non-VR path scales it, its Z is a PSP *screen space* depth in [0, 65535]. orgPos
+		// never went through that, so we have to apply the same divide and viewport mapping to
+		// it before we can reuse the non-VR scaling - otherwise we'd be mixing two spaces.
 		if (useHWTransform) {
-			WRITE(p, "  %sgl_Position.z = orgPos.z / abs(orgPos.w) * abs(outPos.w);\n", compat.vsOutPrefix);
+			WRITE(p, "  float vrOrgZ = (orgPos.z * u_vpScale.z) / orgPos.w + u_vpOffset.z;\n");
+			if (gstate_c.Use(GPU_ROUND_DEPTH_TO_16BIT)) {
+				WRITE(p, "  vrOrgZ = floor(vrOrgZ * 0.5) * 2.0;\n");
+			}
+			WRITE(p, "  %sgl_Position.z = vrOrgZ * (1.0 / 65536.0) * outPos.w;\n", compat.vsOutPrefix);
 		}
 
 		// HUD scaling
