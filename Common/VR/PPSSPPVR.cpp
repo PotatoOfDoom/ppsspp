@@ -645,6 +645,13 @@ int GetVRFBOIndex() {
 	return VR_GetConfig(VR_CONFIG_CURRENT_FBO);
 }
 
+float GetVRStereoIPD() {
+	float dx = vrView[1].pose.position.x - vrView[0].pose.position.x;
+	float dy = vrView[1].pose.position.y - vrView[0].pose.position.y;
+	float dz = vrView[1].pose.position.z - vrView[0].pose.position.z;
+	return sqrtf(dx * dx + dy * dy + dz * dz);
+}
+
 int GetVRPassesCount() {
 	if (IsVRVulkanRenderer()) {
 		// The two-pass stereo mode replays the recorded frame once per eye with a different view

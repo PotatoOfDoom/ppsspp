@@ -493,15 +493,12 @@ bool GenerateVertexShader(const VShaderID &id, char *buffer, const ShaderLanguag
 
 		WRITE(p, "  vec4 viewPos = vec4(mul(vec4(worldpos, 1.0), u_view).xyz, 1.0);\n");
 		if (useSimpleStereo) {
-			float ipd = 0.065f;
-			float scale = 1.0f;
-			if (PSP_CoreParameter().compat.vrCompat().UnitsPerMeter > 0) {
-				scale = PSP_CoreParameter().compat.vrCompat().UnitsPerMeter;
-			}
+			// The offset comes in as a uniform rather than baked in here, because in VR it follows
+			// the headset's measured IPD - and shaders outlive a session, they get cached to disk.
 			// View 0 is the left eye. Moving that camera to the left shifts everything it sees to
 			// the right in view space, so the left eye gets the positive offset, not the negative
 			// one - swapping these makes near geometry read as cross-eyed.
-			WRITE(p, "  viewPos.x += %f * float(1 - gl_ViewIndex * 2);\n", scale * ipd * 0.5);
+			WRITE(p, "  viewPos.x += u_stereoOffset * float(1 - gl_ViewIndex * 2);\n");
 		}
 
 		// Final view and projection transforms.

@@ -47,7 +47,7 @@ struct alignas(16) UB_VS_FS_Base {
 	// For normal drawing, we can get away with just uploading the first X bytes of the struct
 	// (up to and including fogCoef).
 	float projLens[16];
-	float scaleX; float scaleY; float padding5[2];
+	float scaleX; float scaleY; float stereoOffset; float padding5;
 };
 static_assert(sizeof(UB_VS_FS_Base) <= 512, "UB_VS_FS_Base should be 512 bytes");
 
@@ -74,7 +74,7 @@ R"(  mat4 u_proj;
   vec3 u_blendFixA; float u_stencilReplaceValue;
   vec3 u_blendFixB; float u_rotation;
   mat4 u_proj_lens;
-  float u_scaleX; float u_scaleY; float pad3; float pad4;
+  float u_scaleX; float u_scaleY; float u_stereoOffset; float pad4;
 )";
 
 // 512 bytes. Would like to shrink more. Some colors only have 8-bit precision and we expand

@@ -12,6 +12,7 @@
 #include "Common/TimeUtil.h"
 #include "Common/VR/PPSSPPVR.h"
 #include "Core/Config.h"
+#include "Core/System.h"
 #include "GPU/GPUState.h"
 #include "GPU/Common/FramebufferManagerCommon.h"
 #include "GPU/Common/GPUStateUtils.h"
@@ -94,6 +95,23 @@ void BaseUpdateUniforms(UB_VS_FS_Base *ub, uint64_t dirtyUniforms, bool useBuffe
 			ub->scaleX = 1.0f;
 			ub->scaleY = 1.0f;
 		}
+	}
+
+	if (gstate_c.Use(GPU_USE_SINGLE_PASS_STEREO)) {
+		// Not tied to a dirty flag - in VR this follows the headset's measured IPD, which the
+		// runtime can revise between frames.
+		float ipd = 0.065f;  // An average, for when we have nothing better (and for flat stereo).
+		if (useVR) {
+			float measured = GetVRStereoIPD();
+			if (measured > 0.0f) {
+				ipd = measured;
+			}
+		}
+		float scale = 1.0f;
+		if (PSP_CoreParameter().compat.vrCompat().UnitsPerMeter > 0) {
+			scale = PSP_CoreParameter().compat.vrCompat().UnitsPerMeter;
+		}
+		ub->stereoOffset = ipd * scale * 0.5f;
 	}
 
 	if (dirtyUniforms & DIRTY_TEXENV) {

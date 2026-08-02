@@ -54,6 +54,10 @@ void PreVRFrameRender(int fboIndex);
 void PostVRFrameRender();
 int GetVRFBOIndex();
 int GetVRPassesCount();
+
+// The headset's measured interpupillary distance, in meters. Returns 0 before the runtime has
+// given us the eye poses, in which case callers should fall back to an average.
+float GetVRStereoIPD();
 bool IsPassthroughSupported();
 bool IsBigScreenVRMode();
 bool IsFlatVRGame();
