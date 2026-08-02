@@ -157,7 +157,8 @@ Still missing entirely: `sceSysreg_driver`, `sceSyscon_driver`, `sceNand_driver`
 `sceCertLoader`, `sceMesgLed`, `sceClockgen_driver`, `sceUmdMan_driver`, `sceMeCore`,
 `sceLibUpdateDL`, and the kernel-side `sceUtility`. A boot against real 6.61 additionally wanted
 `sceBSMan`, `sceMlnBridge`, `sceResmgr`, `sceUtility_netparam_internal`, `sceNpCommerce2Store` and
-`sceNpCommerce2RegCam` — one to three functions each, imported but not called yet.
+`sceNpCommerce2RegCam` — one to three functions each. Only `sceResmgr` has been called so far; see
+below for why it is not a matter of adding a table entry.
 `sceVshCommonGui` and `sceVshCommonUtil` are *not* on any of these lists — like `scePaf`, they come
 from real modules in the dump and don't need HLE.
 
@@ -242,13 +243,58 @@ Note also `sceKernelLoadModule: unsupported options` in the log — the `SceKern
 passes is accepted but its position/access fields are discarded, which ties into the privilege-model
 gap below.
 
-Of the six libraries the XMB links against, **`sceResmgr` is now actually called** — one
-`0x9dc14891` from `vsh_module`, right after a resource file is closed. That is the trigger this
-document asked for, but it needs care rather than a quick stub: `sceResmgr` looks like the resource
-decryptor, so "return success without doing anything" hands the caller undecrypted data, which is
-worse than an honest failure. Work out what the call site does with the result first. The other five
-still have no call site at all and are deliberately left alone, for the same reason — stubbing a
-function whose purpose is unknown means guessing its contract.
+**`sceResmgr` is called, understood, and still not implementable.** It is the one library on that
+list the XMB has actually called, and it is worth writing down what it is, because the answer is "we
+cannot do this yet" rather than "nobody has got round to it".
+
+Read off the call site in `vsh_module` (there is no argument list for it in PSPLibDoc), it is
+`int sceResmgr_9DC14891(void *buf, int size, int *outSize)`. The caller reads
+`flash0:/vsh/etc/index_01g.dat` — 496 bytes on a 6.61 dump — closes the file, hands the buffer
+straight to this function, and branches on the sign of the result:
+
+```
+jal   sceIoClose
+move  a0, s1          ; buffer
+move  a1, s2          ; size
+jal   sceResmgr_9dc14891
+move  a2, s4          ; &outSize
+move  s0, v0
+bgez  s0, <success>   ; anything negative -> return 0, give up
+```
+
+So it decrypts `index.dat` in place and reports the plaintext length. And the file really is
+encrypted — measured over the dump's copy, the first 0x40 bytes carry 2.78 bits of entropy per byte
+(a plaintext header, magic `PSPsysGP`), 0x40–0x100 carries 3.49 (structure plus two dense blocks at
+0x80 and 0xc0 that look like a signature and a hash), and the last 240 bytes carry **7.13** — that
+is ciphertext, not a header PPSSPP could just parse.
+
+That makes the "return success and do nothing" stub actively harmful rather than merely useless: the
+VSH would take 240 bytes of ciphertext for an index table. Right now the unresolved-import trap
+returns `LIBRARY_NOT_YET_LINKED`, which is negative, so the caller takes its own failure path — an
+honest answer that happens to be the correct one. Its `ScePafJob` thread then exits with code 1 and
+the VSH settles into its idle loop.
+
+Implementing it needs the container format and Sony's key, and neither is available here:
+
+- `pspDecryptPRX` (`Core/ELF/PrxDecrypter.h`), PPSSPP's only decryption entry point, expects a `~PSP`
+  header. `index.dat` is not one — the field at offset 0 is `PSPs`, not `~PSP`, and `elf_size` reads
+  as `0x0fff0000` for a 496-byte file. Some later offsets do line up with `PSP_Header` (48 bytes at
+  0x80 where `key_data0` lives, `comp_size` at 0xb0), so the layouts are probably related, but
+  "probably related" is not something to build a decryptor on.
+- `pspdecrypt` rejects the file outright with `Unknown input file format!`, so the PC-side route that
+  works for modules — see "How to try it" — does not cover it either, and `Tools/extract_flash0.py`
+  does not touch `vsh/etc` at all.
+- The implementations that do exist are GPLv3, which cannot go into PPSSPP (GPLv2-or-later), not even
+  paraphrased. It would have to be rewritten from the algorithm, as with KL4E above.
+
+`ext/libkirk` already has the primitives this would be built on (AES, SHA-1, the AMCTRL/PGD helpers,
+bignum and elliptic curve), so the missing piece is the format and the key derivation, not the
+crypto. Until someone has those, leave the import unresolved: the failure is visible, correct, and
+does not corrupt anything.
+
+The other five libraries still have no call site at all and are deliberately left alone, for the
+reason this section opened with — stubbing a function whose purpose is unknown means guessing its
+contract.
 
 Adding these follows the normal recipe in `AGENTS.md`. For NIDs and names, use
 [PSPLibDoc](https://github.com/pspdev/psplibdoc) (GPL-2.0) — it has per-firmware exports for every
