@@ -117,6 +117,20 @@ static int vshIdStorageLookup(u32 leafId, u32 offset, u32 bufPtr, u32 len) {
 	return hleCall(sceIdStorage_driver, int, sceIdStorageLookup, leafId, offset, bufPtr, len);
 }
 
+// impose_plugin calls this every frame - about 17k times in a minute of running. There is nothing
+// to implement: the call site discards the result (v0 is never read before the next call clobbers
+// it), and PPSSPP applies impose params as they are set, so there is no pending state for an
+// "apply the changes" call to flush. So do nothing, but say so only once - at that rate, shouting
+// every time buries whatever the VSH does next, which is the whole point of these log lines.
+static int vshImposeChanges() {
+	static bool reported = false;
+	if (!reported) {
+		reported = true;
+		return hleLogError(Log::HLE, 0, "UNIMPL - caller discards the result, nothing to flush");
+	}
+	return hleLogDebug(Log::HLE, 0, "UNIMPL");
+}
+
 // The XMB reaches the impose params through here rather than through sceImpose_driver, which is
 // just as well - that library's NIDs were obfuscated from firmware 3.70 on and its names were never
 // recovered, so it can't be implemented. See sceImpose.h.
@@ -146,8 +160,8 @@ const HLEFunction sceVshBridge[] = {
 	{0X0D7A4FE4, &WrapI_UU<vshCtrlReadBufferPositive>, "vshCtrlReadBufferPositive",              'i', "xx",     HLE_KERNEL_SYSCALL},
 	{0XC6395C03, &WrapI_UU<vshCtrlReadBufferPositive>, "vshCtrlReadBufferPositive",              'i', "xx",     HLE_KERNEL_SYSCALL},
 	{0X4DB43867, &WrapI_UUUU<vshIdStorageLookup>,      "vshIdStorageLookup",                     'i', "xxxx",   HLE_KERNEL_SYSCALL},
-	{0X228B9BC0, &WrapI_V<VshBridgeUnimpl>,            "vshImposeChanges",                       'i', "",       HLE_KERNEL_SYSCALL},
-	{0X5894C339, &WrapI_V<VshBridgeUnimpl>,            "vshImposeChanges",                       'i', "",       HLE_KERNEL_SYSCALL},
+	{0X228B9BC0, &WrapI_V<vshImposeChanges>,           "vshImposeChanges",                       'i', "",       HLE_KERNEL_SYSCALL},
+	{0X5894C339, &WrapI_V<vshImposeChanges>,           "vshImposeChanges",                       'i', "",       HLE_KERNEL_SYSCALL},
 	{0X360752BF, &WrapI_I<vshImposeGetParam>,          "vshImposeGetParam",                      'i', "i",      HLE_KERNEL_SYSCALL},
 	{0X639C3CB3, &WrapI_I<vshImposeGetParam>,          "vshImposeGetParam",                      'i', "i",      HLE_KERNEL_SYSCALL},
 	{0XF71BB4D5, &WrapI_I<vshImposeGetParam>,          "vshImposeGetParam",                      'i', "i",      HLE_KERNEL_SYSCALL},

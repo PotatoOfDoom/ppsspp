@@ -211,7 +211,8 @@ reports those separately. The only other trace is one `INFO` line per reference 
 Every function the XMB imports **by name** now has an implementation. The ones that were `nullptr`
 until it asked for them: `sceRtcGetAlarmTick`, `sceRtcIsAlarmed`, `sceRtcRegisterCallback` and
 `sceRtcUnregisterCallback` (there is no alarm hardware, so they report none set),
-`scePowerIsRequest`, `scePowerCancelRequest` and `scePowerRequestSuspend` (suspend isn't emulated),
+`scePowerIsRequest`, `scePowerCancelRequest`, `scePowerRequestSuspend` and
+`scePowerIsSuspendRequired` (suspend isn't emulated),
 `sceHttpsEnableOption` (the counterpart of the already-present `sceHttpsDisableOption`), and
 `sceNpCommerce2Init`/`Term`. Worth redoing after any change to the dump — the list came from
 cross-referencing the `Importing <name>` lines in a boot log against the `HLEFunction` tables,
@@ -226,12 +227,20 @@ that sets only position and access, no partition IDs. It is exported under three
 stub, because nothing has called it yet. With this in place a boot loads and starts
 `opening_plugin.prx`, `impose_plugin.prx` and `flash0:/kd/mpeg_vsh.prx`.
 
-Two things the plugins then poll every frame, thousands of times per boot, are the obvious next
-candidates: `scePowerIsSuspendRequired`, which is still a `nullptr` entry in `scePower.cpp` (so it
-logs `Unimplemented HLE function` and never writes anything), and `vshImposeChanges`, a name-only
-`sceVshBridge` entry. Note also `sceKernelLoadModule: unsupported options` in the log — the
-`SceKernelLMOption` the VSH passes is accepted but its position/access fields are discarded, which
-ties into the privilege-model gap below.
+The plugins then poll two things every frame — about 17,000 calls each in a minute of running — and
+they are worth understanding because they are opposite cases. `scePowerIsSuspendRequired` was a
+`nullptr` entry, so it answered `LIBRARY_NOT_YET_LINKED`: a *nonzero* value to a caller asking a
+yes/no question, i.e. "suspend now", every frame. It now reports no suspend pending, like the other
+power request functions. `vshImposeChanges` looks similar but needed the opposite treatment: the
+call site discards the return value entirely (`v0` is never read before the next call overwrites
+it), and PPSSPP applies impose params as they are set, so there is no deferred state for an "apply
+the changes" call to flush. There is nothing to implement, so it stays a no-op that says so once
+instead of every frame. Between them those two were 35,600 of the 35,650 error lines in a boot log,
+which is reason enough to deal with a hot stub even when it turns out to be harmless.
+
+Note also `sceKernelLoadModule: unsupported options` in the log — the `SceKernelLMOption` the VSH
+passes is accepted but its position/access fields are discarded, which ties into the privilege-model
+gap below.
 
 Of the six libraries the XMB links against, **`sceResmgr` is now actually called** — one
 `0x9dc14891` from `vsh_module`, right after a resource file is closed. That is the trigger this

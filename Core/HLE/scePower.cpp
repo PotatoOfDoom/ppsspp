@@ -279,6 +279,12 @@ static int scePowerCancelRequest() {
 	return hleLogDebug(Log::HLE, 0, "no power request pending");
 }
 
+// The XMB polls this every frame, so the nullptr entry it used to have was answering
+// LIBRARY_NOT_YET_LINKED - a nonzero value, i.e. "yes, suspend now" - thousands of times a boot.
+static int scePowerIsSuspendRequired() {
+	return hleLogDebug(Log::HLE, 0, "no suspend pending");
+}
+
 static int sceKernelPowerLock(int lockType) {
 	if (lockType == 0) {
 		return hleLogDebug(Log::HLE, 0);
@@ -585,7 +591,7 @@ static const HLEFunction scePower[] = {
 	{0X1E490401, &WrapI_V<scePowerIsBatteryCharging>,         "scePowerIsBatteryCharging",         'i', ""   },
 	{0XB4432BC8, &WrapI_V<scePowerGetBatteryChargingStatus>,  "scePowerGetBatteryChargingStatus",  'i', ""   },
 	{0XD3075926, &WrapI_V<scePowerIsLowBattery>,              "scePowerIsLowBattery",              'i', ""   },
-	{0X78A1A796, nullptr,                                     "scePowerIsSuspendRequired",         '?', ""   },
+	{0X78A1A796, &WrapI_V<scePowerIsSuspendRequired>,         "scePowerIsSuspendRequired",         'i', ""   },
 	{0X94F5A53F, nullptr,                                     "scePowerGetBatteryRemainCapacity",  '?', ""   },
 	{0XFD18A0FF, nullptr,                                     "scePowerGetBatteryFullCapacity",    '?', ""   },
 	{0X2085D15D, &WrapI_V<scePowerGetBatteryLifePercent>,     "scePowerGetBatteryLifePercent",     'i', ""   },
