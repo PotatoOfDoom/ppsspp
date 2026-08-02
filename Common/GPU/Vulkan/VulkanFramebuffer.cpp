@@ -13,6 +13,8 @@ static const char * const rpTypeDebugNames[] = {
 	"MS_MV_RENDER",
 	"MS_MV_RENDER_DEPTH",
 	"BACKBUF",
+	"INVALID_BACKBUF_DEPTH",  // BACKBUFFER always has depth, this combination is never built.
+	"MV_BACKBUF",
 };
 
 const char *GetRPTypeName(RenderPassType rpType) {
@@ -292,7 +294,7 @@ static VkAttachmentStoreOp ConvertStoreAction(VKRRenderPassStoreAction action) {
 // Also see https://www.khronos.org/registry/vulkan/specs/1.3-extensions/html/vkspec.html#synchronization-pipeline-barriers-subpass-self-dependencies
 
 VkRenderPass CreateRenderPass(VulkanContext *vulkan, const RPKey &key, RenderPassType rpType, VkSampleCountFlagBits sampleCount) {
-	bool isBackbuffer = rpType == RenderPassType::BACKBUFFER;
+	bool isBackbuffer = (rpType & RenderPassType::BACKBUFFER) != 0;
 	if (isBackbuffer) {
 		_dbg_assert_(key.colorLoadAction != VKRRenderPassLoadAction::KEEP);
 		_dbg_assert_(key.depthLoadAction != VKRRenderPassLoadAction::KEEP);

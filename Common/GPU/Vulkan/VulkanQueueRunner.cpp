@@ -32,7 +32,7 @@ static void MergeRenderAreaRectInto(VkRect2D *dest, const VkRect2D &src) {
 RenderPassType MergeRPTypes(RenderPassType a, RenderPassType b) {
 	// Either both are backbuffer type, or neither are.
 	// These can't merge with other renderpasses
-	if (a == RenderPassType::BACKBUFFER || b == RenderPassType::BACKBUFFER) {
+	if ((a & RenderPassType::BACKBUFFER) || (b & RenderPassType::BACKBUFFER)) {
 		_dbg_assert_(a == b);
 		return a;
 	}
@@ -125,6 +125,11 @@ bool VulkanQueueRunner::InitVRFramebuffers() {
 
 	VkDevice device = vulkan_->GetDevice();
 
+	// With single-pass stereo both eyes live in the two array layers of one OpenXR swapchain image,
+	// so everything here - depth buffer, views, framebuffer - has to be layered to match.
+	const bool stereo = IsVRVulkanStereo();
+	const uint32_t layers = stereo ? 2 : 1;
+
 	// The backbuffer render pass declares an UNDEFINED initial layout for the depth buffer and
 	// resolves the rest with subpass dependencies, so unlike the regular backbuffer depth buffer
 	// this one needs no explicit barrier - and therefore no command buffer.
@@ -136,7 +141,7 @@ bool VulkanQueueRunner::InitVRFramebuffers() {
 	image_info.extent.height = desc.height;
 	image_info.extent.depth = 1;
 	image_info.mipLevels = 1;
-	image_info.arrayLayers = 1;
+	image_info.arrayLayers = layers;
 	image_info.samples = VK_SAMPLE_COUNT_1_BIT;
 	image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 	image_info.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT;
@@ -158,8 +163,8 @@ bool VulkanQueueRunner::InitVRFramebuffers() {
 	depth_view_info.format = depthFormat;
 	depth_view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
 	depth_view_info.subresourceRange.levelCount = 1;
-	depth_view_info.subresourceRange.layerCount = 1;
-	depth_view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+	depth_view_info.subresourceRange.layerCount = layers;
+	depth_view_info.viewType = stereo ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
 	res = vkCreateImageView(device, &depth_view_info, nullptr, &vrDepth_.view);
 	if (res != VK_SUCCESS) {
 		ERROR_LOG(Log::G3D, "Failed to create the VR depth buffer view");
@@ -170,9 +175,12 @@ bool VulkanQueueRunner::InitVRFramebuffers() {
 
 	// Same render pass as the real backbuffer uses, so that the pipelines we compile for the
 	// backbuffer are compatible with these framebuffers too.
-	VkRenderPass renderPass = GetCompatibleRenderPass()->Get(vulkan_, RenderPassType::BACKBUFFER, VK_SAMPLE_COUNT_1_BIT);
+	VkRenderPass renderPass = GetCompatibleRenderPass()->Get(vulkan_,
+		stereo ? RenderPassType::BACKBUFFER_MULTIVIEW : RenderPassType::BACKBUFFER, VK_SAMPLE_COUNT_1_BIT);
 
-	for (int eye = 0; eye < 2; eye++) {
+	// In stereo there is only the one swapchain - the second eye is its second array layer.
+	const int eyeCount = stereo ? 1 : 2;
+	for (int eye = 0; eye < eyeCount; eye++) {
 		vrFramebuffers_[eye].views.resize(desc.imageCount);
 		vrFramebuffers_[eye].framebuffers.resize(desc.imageCount);
 		for (uint32_t i = 0; i < desc.imageCount; i++) {
@@ -185,11 +193,11 @@ bool VulkanQueueRunner::InitVRFramebuffers() {
 
 			VkImageViewCreateInfo view_info = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
 			view_info.image = image;
-			view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+			view_info.viewType = stereo ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
 			view_info.format = desc.format;
 			view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 			view_info.subresourceRange.levelCount = 1;
-			view_info.subresourceRange.layerCount = 1;
+			view_info.subresourceRange.layerCount = layers;
 			res = vkCreateImageView(device, &view_info, nullptr, &vrFramebuffers_[eye].views[i]);
 			if (res != VK_SUCCESS) {
 				ERROR_LOG(Log::G3D, "Failed to create a view for OpenXR swapchain image %d", (int)i);
@@ -204,6 +212,8 @@ bool VulkanQueueRunner::InitVRFramebuffers() {
 			fb_info.pAttachments = attachments;
 			fb_info.width = desc.width;
 			fb_info.height = desc.height;
+			// Note: with multiview this must stay 1 - the layer count comes from the render pass'
+			// view mask, not from here. The image views are the ones that cover both layers.
 			fb_info.layers = 1;
 			res = vkCreateFramebuffer(device, &fb_info, nullptr, &vrFramebuffers_[eye].framebuffers[i]);
 			if (res != VK_SUCCESS) {

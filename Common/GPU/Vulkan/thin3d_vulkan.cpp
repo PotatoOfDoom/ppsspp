@@ -28,6 +28,7 @@
 #include "Common/Data/Convert/SmallDataConvert.h"
 #include "Common/GPU/thin3d.h"
 #include "Common/GPU/Vulkan/VulkanRenderManager.h"
+#include "Common/VR/PPSSPPVRVulkan.h"
 #include "Common/GPU/Vulkan/VulkanContext.h"
 #include "Common/GPU/Vulkan/VulkanImage.h"
 #include "Common/GPU/Vulkan/VulkanMemory.h"
@@ -1297,7 +1298,12 @@ Pipeline *VKContext::CreateGraphicsPipeline(const PipelineDesc &desc, const char
 		gDesc.rs_provoking.provokingVertexMode = VK_PROVOKING_VERTEX_MODE_LAST_VERTEX_EXT;
 	}
 
-	pipeline->pipeline = renderManager_.CreateGraphicsPipeline(&gDesc, pipelineFlags, 1 << (size_t)RenderPassType::BACKBUFFER, VK_SAMPLE_COUNT_1_BIT, false, tag ? tag : "thin3d");
+	uint32_t variants = 1 << (size_t)RenderPassType::BACKBUFFER;
+	if (IsVRVulkanStereo()) {
+		// The VR backbuffer is a two-layer multiview target, so we need that variant as well.
+		variants |= 1 << (size_t)RenderPassType::BACKBUFFER_MULTIVIEW;
+	}
+	pipeline->pipeline = renderManager_.CreateGraphicsPipeline(&gDesc, pipelineFlags, variants, VK_SAMPLE_COUNT_1_BIT, false, tag ? tag : "thin3d");
 	_dbg_assert_(pipeline->pipeline);
 
 	if (desc.uniformDesc) {

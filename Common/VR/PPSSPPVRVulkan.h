@@ -18,6 +18,14 @@
 // Everything else in this header only does something meaningful when this returns true.
 bool IsVRVulkanRenderer();
 
+// True when the VR path renders both eyes in one pass, into the two layers of a single OpenXR
+// swapchain image (multiview). The swapchain array size, the render pass type, the composition
+// layers and the GPU's single-pass-stereo feature flag all key off this, so they cannot disagree
+// with each other - a mismatch there means a rejected frame and a black headset. Decided as soon
+// as the session exists, because the swapchains are created on the first VR frame, well before
+// any game (and hence any GPU backend object) does.
+bool IsVRVulkanStereo();
+
 // XR_KHR_vulkan_enable requires the runtime to have a say in how the Vulkan instance and device
 // are created, so these have to be consulted before creating them. Safe (no-ops) when not in VR.
 void GetVRVulkanInstanceExtensions(std::vector<std::string> *extensions);

@@ -4,6 +4,7 @@
 #include "VRBase.h"
 #include "VRInput.h"
 #include "VRRenderer.h"
+#include "Common/VR/PPSSPPVRVulkan.h"
 #include "OpenXRLoader.h"
 
 #include <cstdlib>
@@ -411,7 +412,7 @@ void VR_FinishFrame( engine_t* engine ) {
 			if (vrMode != VR_MODE_MONO_6DOF) {
 				pose = invViewTransform[eye];
 			}
-			if (vrMode == VR_MODE_STEREO_6DOF) {
+			if (vrMode == VR_MODE_STEREO_6DOF && !IsVRVulkanStereo()) {
 				frameBuffer = &engine->appState.Renderer.FrameBuffer[eye];
 			}
 
@@ -426,7 +427,10 @@ void VR_FinishFrame( engine_t* engine ) {
 			projection_layer_elements[eye].subImage.imageRect.offset.y = 0;
 			projection_layer_elements[eye].subImage.imageRect.extent.width = frameBuffer->ColorSwapChain.Width;
 			projection_layer_elements[eye].subImage.imageRect.extent.height = frameBuffer->ColorSwapChain.Height;
-			projection_layer_elements[eye].subImage.imageArrayIndex = 0;
+			// Single-pass stereo renders both eyes into the layers of one swapchain image, so the
+			// eye is selected by the array index rather than by a separate swapchain.
+			projection_layer_elements[eye].subImage.imageArrayIndex =
+				(vrMode == VR_MODE_STEREO_6DOF && IsVRVulkanStereo()) ? eye : 0;
 
 			if (vrMode == VR_MODE_SBS_6DOF) {
 				projection_layer_elements[eye].subImage.imageRect.extent.width /= 2;
@@ -499,7 +503,12 @@ void VR_FinishFrame( engine_t* engine ) {
 			cylinder_layer.eyeVisibility = XR_EYE_VISIBILITY_LEFT;
 			engine->appState.Layers[engine->appState.LayerCount++].Cylinder = cylinder_layer;
 			cylinder_layer.eyeVisibility = XR_EYE_VISIBILITY_RIGHT;
-			cylinder_layer.subImage.swapchain = engine->appState.Renderer.FrameBuffer[1].ColorSwapChain.Handle;
+			if (IsVRVulkanStereo()) {
+				// Single-pass stereo: the right eye is the second array layer of the same image.
+				cylinder_layer.subImage.imageArrayIndex = 1;
+			} else {
+				cylinder_layer.subImage.swapchain = engine->appState.Renderer.FrameBuffer[1].ColorSwapChain.Handle;
+			}
 			engine->appState.Layers[engine->appState.LayerCount++].Cylinder = cylinder_layer;
 		}
 	}

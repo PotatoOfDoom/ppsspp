@@ -1,4 +1,5 @@
 #include "VRFramebuffer.h"
+#include "Common/VR/PPSSPPVRVulkan.h"
 
 #if XR_USE_GRAPHICS_API_OPENGL || XR_USE_GRAPHICS_API_OPENGL_ES
 
@@ -225,7 +226,9 @@ static bool ovrFramebuffer_CreateVK(XrSession session, ovrFramebuffer* frameBuff
 	swapChainCreateInfo.height = height;
 	swapChainCreateInfo.faceCount = 1;
 	swapChainCreateInfo.mipCount = 1;
-	swapChainCreateInfo.arraySize = 1;
+	// With single-pass stereo we render both eyes into the two array layers of one image, so the
+	// runtime has to hand us an array swapchain. Only the first framebuffer is used in that case.
+	swapChainCreateInfo.arraySize = IsVRVulkanStereo() ? 2 : 1;
 	swapChainCreateInfo.format = format;
 	swapChainCreateInfo.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
 

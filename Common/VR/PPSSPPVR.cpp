@@ -57,6 +57,11 @@ static bool vrMirroring[VR_MIRRORING_COUNT];
 static int vrMirroringVariant = 0;
 static XrView vrView[2];
 
+// Set once, when the session is created and we have the VulkanContext in hand. It has to be known
+// that early: the OpenXR swapchains are created on the first VR frame, which happens while the UI
+// is still rendering - long before a game (and with it GPU_Vulkan) exists.
+static bool vrVulkanMultiviewSupported = false;
+
 static void (*cbNativeAxis)(const AxisInput *axis, size_t count);
 static bool (*cbNativeKey)(const KeyInput &key);
 static void (*cbNativeTouch)(const TouchInput &touch);
@@ -199,6 +204,7 @@ void EnterVR(bool firstStart, void* vulkanContext) {
 			engine->graphicsBindingVulkan.physicalDevice = context->GetCurrentPhysicalDevice();
 			engine->graphicsBindingVulkan.queueFamilyIndex = context->GetGraphicsQueueFamilyIndex();
 			engine->graphicsBindingVulkan.queueIndex = 0;
+			vrVulkanMultiviewSupported = context->GetDeviceFeatures().enabled.multiview.multiview != 0;
 			VR_EnterVR(engine, &engine->graphicsBindingVulkan);
 
 			// Decide on the swapchain format right away - the backbuffer render pass, which is
@@ -590,12 +596,13 @@ bool StartVRRender() {
 
 		// Decide if the scene is 3D or not
 		VR_SetConfigFloat(VR_CONFIG_CANVAS_ASPECT, 480.0f / 272.0f);
-		// Ask for the pass count rather than reading the setting directly: the stereo modes submit
-		// a second composition layer out of FrameBuffer[1], and a swapchain may only be referenced
-		// by a layer once it has actually had an image released this frame. A backend that renders
-		// a single pass never touches that swapchain, so claiming stereo here would get the whole
-		// frame rejected with XR_ERROR_LAYER_INVALID - a black headset, not a mono image.
-		bool vrStereo = GetVRPassesCount() > 1;
+		// Don't read the setting directly - claim stereo only when the renderer actually produces
+		// two eye images, either as two passes or as the two layers of one multiview image. The
+		// stereo modes submit a second composition layer, and a swapchain may only be referenced by
+		// a layer once it has had an image released this frame. Claiming stereo without producing it
+		// gets the whole frame rejected with XR_ERROR_LAYER_INVALID - a black headset, not a mono
+		// image.
+		bool vrStereo = GetVRPassesCount() > 1 || IsVRVulkanStereo();
 		if (!IsBigScreenVRMode() && (appMode == VR_GAME_MODE)) {
 			VR_SetConfig(VR_CONFIG_MODE, vrStereo ? VR_MODE_STEREO_6DOF : VR_MODE_MONO_6DOF);
 			VR_SetConfig(VR_CONFIG_REPROJECTION, IsImmersiveVRMode() ? 0 : 1);
@@ -662,6 +669,13 @@ Vulkan rendering integration
 
 bool IsVRVulkanRenderer() {
 	return IsVREnabled() && VR_GetPlatformFlag(VR_PLATFORM_RENDERER_VULKAN);
+}
+
+bool IsVRVulkanStereo() {
+	if (!IsVRVulkanRenderer() || !vrVulkanMultiviewSupported) {
+		return false;
+	}
+	return !PSP_CoreParameter().compat.vrCompat().ForceMono && g_Config.bEnableStereo;
 }
 
 void GetVRVulkanInstanceExtensions(std::vector<std::string> *extensions) {

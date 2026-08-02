@@ -28,6 +28,7 @@
 #include "Common/Data/Text/StringWriter.h"
 
 #include "Common/VR/PPSSPPVR.h"
+#include "Common/VR/PPSSPPVRVulkan.h"
 #include "Core/Config.h"
 #include "Core/Reporting.h"
 #include "Core/System.h"
@@ -223,9 +224,16 @@ u32 GPU_Vulkan::CheckGPUFeatures() const {
 		}
 	}
 
-	if (g_Config.bStereoRendering && draw_->GetDeviceCaps().multiViewSupported) {
+	// In VR, stereo comes from the headset setting rather than the desktop one. Note that we don't
+	// set GPU_USE_SIMPLE_STEREO_PERSPECTIVE here: that drives the "stereo to mono" presentation
+	// shader, which folds the two layers back together for a flat screen - the opposite of what we
+	// want, which is one layer per eye.
+	const bool vrStereo = IsVRVulkanStereo();
+	if (vrStereo || (g_Config.bStereoRendering && draw_->GetDeviceCaps().multiViewSupported)) {
 		features |= GPU_USE_SINGLE_PASS_STEREO;
-		features |= GPU_USE_SIMPLE_STEREO_PERSPECTIVE;
+		if (!vrStereo) {
+			features |= GPU_USE_SIMPLE_STEREO_PERSPECTIVE;
+		}
 	}
 
 	// Attempt to workaround #17386

@@ -906,7 +906,7 @@ VKRGraphicsPipeline *VulkanRenderManager::CreateGraphicsPipeline(VKRGraphicsPipe
 				continue;
 			}
 
-			if (rpType == RenderPassType::BACKBUFFER) {
+			if (rpType & RenderPassType::BACKBUFFER) {
 				sampleCount = VK_SAMPLE_COUNT_1_BIT;
 			}
 
@@ -945,7 +945,9 @@ void VulkanRenderManager::EndCurRenderStep() {
 	}
 
 	if (!curRenderStep_->render.framebuffer) {
-		rpType = RenderPassType::BACKBUFFER;
+		// In VR the backbuffer is an OpenXR swapchain image, and with single-pass stereo it has two
+		// layers - one per eye - so the render pass has to be a multiview one.
+		rpType = IsVRVulkanStereo() ? RenderPassType::BACKBUFFER_MULTIVIEW : RenderPassType::BACKBUFFER;
 	} else {
 		// Framebuffers can be stereo, and if so, will control the render pass type to match.
 		// Pipelines can be mono and render fine to stereo etc, so not checking them here.

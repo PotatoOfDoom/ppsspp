@@ -17,13 +17,15 @@ enum class RenderPassType {
 	MULTIVIEW = 2,
 	MULTISAMPLE = 4,
 
-	// This is the odd one out, and gets special handling in MergeRPTypes.
-	// If this flag is set, none of the other flags can be set.
+	// This one gets special handling in MergeRPTypes - it never merges with a non-backbuffer type.
+	// The only other flag it may carry is MULTIVIEW, which VR uses to render both eyes into the two
+	// layers of one OpenXR swapchain image in a single pass.
 	// For the backbuffer we can always use CLEAR/DONT_CARE, so bandwidth cost for a depth channel is negligible
 	// so we don't bother with a non-depth version.
 	BACKBUFFER = 8,
+	BACKBUFFER_MULTIVIEW = BACKBUFFER | MULTIVIEW,
 
-	TYPE_COUNT = BACKBUFFER + 1,
+	TYPE_COUNT = BACKBUFFER_MULTIVIEW + 1,
 };
 ENUM_CLASS_BITOPS(RenderPassType);
 
@@ -104,7 +106,7 @@ private:
 };
 
 inline bool RenderPassTypeHasDepth(RenderPassType type) {
-	return (type & RenderPassType::HAS_DEPTH) || type == RenderPassType::BACKBUFFER;
+	return (type & RenderPassType::HAS_DEPTH) || (type & RenderPassType::BACKBUFFER);
 }
 
 inline bool RenderPassTypeHasMultiView(RenderPassType type) {
