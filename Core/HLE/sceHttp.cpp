@@ -546,6 +546,11 @@ static int sceHttpsDisableOption(int id) {
 	return 0;
 }
 
+static int sceHttpsEnableOption(int id) {
+	ERROR_LOG(Log::sceNet, "UNIMPL sceHttpsEnableOption(%d)", id);
+	return 0;
+}
+
 // Parameter "method" should be one of PSPHttpMethod's listed entries
 static int sceHttpCreateRequest(int connectionID, int method, const char *path, u64 contentLength) {
 	WARN_LOG(Log::sceNet, "UNTESTED sceHttpCreateRequest(%d, %d, %s, %llx)", connectionID, method, safe_string(path), contentLength);
@@ -868,7 +873,7 @@ const HLEFunction sceHttp[] = {
 	{0XA4496DE5, &WrapI_IUU<sceHttpSetRedirectCallback>,     "sceHttpSetRedirectCallback",     'i', "ixx"   },
 	{0X267618F4, &WrapI_IUU<sceHttpSetAuthInfoCallback>,     "sceHttpSetAuthInfoCallback",     'i', "ixx"   },
 	{0X569A1481, &WrapI_IUU<sceHttpsSetSslCallback>,         "sceHttpsSetSslCallback",         'i', "ixx"   },
-	{0XBAC31BF1, nullptr,                                    "sceHttpsEnableOption",           '?', ""      },
+	{0XBAC31BF1, &WrapI_I<sceHttpsEnableOption>,             "sceHttpsEnableOption",           'i', "i"     },
 };				
 
 void Register_sceHttp()

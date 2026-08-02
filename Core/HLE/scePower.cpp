@@ -265,6 +265,12 @@ static int scePowerUnregisterCallback(int slotId) {
 // Suspend/standby requests aren't emulated - nothing ever puts a request in - so there is never one
 // pending to report or to cancel. Answering that truthfully is better than the nullptr table entry
 // these had, which returned SCE_KERNEL_ERROR_LIBRARY_NOT_YET_LINKED to a caller expecting 0 or 1.
+// Nothing here can actually suspend, so we accept the request and never act on it - the alternative
+// was the nullptr table entry, which handed the caller LIBRARY_NOT_YET_LINKED.
+static int scePowerRequestSuspend() {
+	return hleLogWarning(Log::HLE, 0, "suspend is not emulated, ignoring the request");
+}
+
 static int scePowerIsRequest() {
 	return hleLogDebug(Log::HLE, 0, "no power request pending");
 }
@@ -596,7 +602,7 @@ static const HLEFunction scePower[] = {
 	{0XDB62C9CF, &WrapI_V<scePowerCancelRequest>,             "scePowerCancelRequest",             'i', ""   },
 	{0X7FA406DD, &WrapI_V<scePowerIsRequest>,                 "scePowerIsRequest",                 'i', ""   },
 	{0X2B7C7CF4, nullptr,                                     "scePowerRequestStandby",            '?', ""   },
-	{0XAC32C9CC, nullptr,                                     "scePowerRequestSuspend",            '?', ""   },
+	{0XAC32C9CC, &WrapI_V<scePowerRequestSuspend>,            "scePowerRequestSuspend",            'i', ""   },
 	{0X2875994B, nullptr,                                     "scePower_2875994B",                 '?', ""   },
 	{0X0074EF9B, nullptr,                                     "scePowerGetResumeCount",            '?', ""   },
 	{0XDFA8BAF8, &WrapI_I<scePowerUnregisterCallback>,        "scePowerUnregisterCallback",        'i', "i"  },

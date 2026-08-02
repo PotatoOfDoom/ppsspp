@@ -191,10 +191,23 @@ into the `lui`/`addiu` pair.
 
 That is why a table entry that admits it does nothing beats no entry at all, and it applies to
 `nullptr` entries in existing modules too — those return the same error and never write their output
-parameters, so the caller reads whatever was on its stack. `sceRtcGetAlarmTick`,
-`sceRtcIsAlarmed`, `sceRtcRegisterCallback`, `sceRtcUnregisterCallback`, `scePowerIsRequest` and
-`scePowerCancelRequest` were all `nullptr` until the XMB called them; they now answer "no alarm
-hardware" / "no power request pending", which is what a PPSSPP with neither actually has.
+parameters, so the caller reads whatever was on its stack.
+
+Every function the XMB imports **by name** now has an implementation. The ones that were `nullptr`
+until it asked for them: `sceRtcGetAlarmTick`, `sceRtcIsAlarmed`, `sceRtcRegisterCallback` and
+`sceRtcUnregisterCallback` (there is no alarm hardware, so they report none set),
+`scePowerIsRequest`, `scePowerCancelRequest` and `scePowerRequestSuspend` (suspend isn't emulated),
+`sceHttpsEnableOption` (the counterpart of the already-present `sceHttpsDisableOption`), and
+`sceNpCommerce2Init`/`Term`. Worth redoing after any change to the dump — the list came from
+cross-referencing the `Importing <name>` lines in a boot log against the `HLEFunction` tables,
+which is a few minutes of scripting and finds them all at once.
+
+What is still genuinely absent is the six libraries the XMB links against but had not called by the
+time it crashed (listed above). They are deliberately left alone for now: stubbing a function whose
+purpose is unknown means guessing its contract, and for at least one — `sceResmgr` looks like the
+resource decryptor — "return success without doing anything" hands the caller undecrypted data,
+which is worse than an honest failure. Add them once a log shows something calling them, so the call
+site says what the return value is for.
 
 Adding these follows the normal recipe in `AGENTS.md`. For NIDs and names, use
 [PSPLibDoc](https://github.com/pspdev/psplibdoc) (GPL-2.0) — it has per-firmware exports for every
@@ -273,6 +286,10 @@ without moving firmware around. Modules have to be decrypted first.
 
   Under a JIT the pc reported at a fault is the start of the compiled block, not the faulting
   instruction, so that line is left out rather than pointing at the wrong opcode.
+- **`--memread=ignore` (and `--memwrite=ignore`) walks straight past a bad access** instead of
+  stopping emulation, so one wild pointer doesn't hide everything behind it. Good for finding out
+  how much further the boot would get; the results after the first bad access are fiction, so don't
+  read anything into them beyond "what does it try next".
 - `PPSSPPHeadless --debugger=PORT` breaks before anything runs, so you can step from the first
   instruction. See [WebSocketDebugger.md](WebSocketDebugger.md), and `Tools/wsdbg/`.
 - Watch for `no module provides library` lines at boot — that's the definitive list of what's
