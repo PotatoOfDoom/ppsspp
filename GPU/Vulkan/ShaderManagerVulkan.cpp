@@ -174,6 +174,10 @@ ShaderManagerVulkan::ShaderManagerVulkan(Draw::DrawContext *draw)
 
 	uniforms_ = (Uniforms *)AllocateAlignedMemory(sizeof(Uniforms), 16);
 	_assert_(uniforms_);
+	// Not every field is written on every path - the VR ones are only touched when
+	// GPU_USE_VIRTUAL_REALITY is set - and the whole struct is uploaded regardless, so start from a
+	// defined state rather than from whatever the allocator handed us.
+	memset(uniforms_, 0, sizeof(Uniforms));
 
 	static_assert(sizeof(uniforms_->ub_base) <= 512, "ub_base grew too big");
 	static_assert(sizeof(uniforms_->ub_lights) <= 512, "ub_lights grew too big");

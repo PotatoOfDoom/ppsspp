@@ -978,8 +978,13 @@ void UpdateVRViewMatrices() {
 
 	for (int matrix = VR_VIEW_MATRIX_LEFT_EYE; matrix <= VR_VIEW_MATRIX_RIGHT_EYE; matrix++) {
 
-		// Stereoscopy
-		bool vrStereo = !PSP_CoreParameter().compat.vrCompat().ForceMono && g_Config.bEnableStereo;
+		// Stereoscopy. Note that M is deliberately not reset between the two iterations, so the
+		// eye matrices are offsets relative to each other rather than to the centered view - only
+		// meaningful if we actually render both of them. When the renderer is mono (Vulkan, see
+		// GetVRPassesCount) the caller uses the left eye alone, and applying the separation would
+		// simply displace the whole world sideways.
+		bool vrStereo = !PSP_CoreParameter().compat.vrCompat().ForceMono && g_Config.bEnableStereo &&
+				GetVRPassesCount() > 1;
 		if (vrStereo && IsVREnabled()) {
 			bool mirrored = vrMirroring[VR_MIRRORING_AXIS_Z] ^ (matrix == VR_VIEW_MATRIX_RIGHT_EYE);
 			float dx = fabs(vrView[1].pose.position.x - vrView[0].pose.position.x);

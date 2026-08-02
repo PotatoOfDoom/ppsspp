@@ -19,7 +19,7 @@ enum : uint64_t {
 	DIRTY_MATDIFFUSE | DIRTY_MATSPECULAR | DIRTY_MATEMISSIVE | DIRTY_AMBIENT,
 };
 
-// Currently 480 bytes.
+// Currently 512 bytes.
 // Every line here is a 4-float.
 struct alignas(16) UB_VS_FS_Base {
 	float proj[16];
