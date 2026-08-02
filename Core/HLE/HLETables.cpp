@@ -80,6 +80,7 @@
 #include "sceVshBridge.h"
 #include "sceChkreg.h"
 #include "sceIdStorage.h"
+#include "sceResmgr.h"
 #include "sceMt19937.h"
 #include "sceSha256.h"
 #include "sceAdler.h"
@@ -333,6 +334,7 @@ void RegisterAllModules() {
 	Register_sceVshBridge();
 	Register_sceChkreg();
 	Register_sceIdStorage();
+	Register_sceResmgr();
 
 	// add new modules here.
 }

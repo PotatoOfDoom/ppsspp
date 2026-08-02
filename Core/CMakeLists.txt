@@ -557,6 +557,8 @@ add_library(Core STATIC
 	HLE/sceVshBridge.cpp
 	HLE/sceIdStorage.cpp
 	HLE/sceIdStorage.h
+	HLE/sceResmgr.cpp
+	HLE/sceResmgr.h
 	HLE/sceChkreg.cpp
 	HLE/sceChkreg.h
 	HLE/sceVshBridge.h

@@ -154,6 +154,7 @@
     <ClCompile Include="..\..\Core\HLE\sceUtility.cpp" />
     <ClCompile Include="..\..\Core\HLE\sceVaudio.cpp" />
     <ClCompile Include="..\..\Core\HLE\sceIdStorage.cpp" />
+    <ClCompile Include="..\..\Core\HLE\sceResmgr.cpp" />
     <ClCompile Include="..\..\Core\HLE\sceChkreg.cpp" />
     <ClCompile Include="..\..\Core\HLE\sceVshBridge.cpp" />
     <ClCompile Include="..\..\Core\HLE\__sceAudio.cpp" />
@@ -575,6 +576,7 @@
     <ClInclude Include="..\..\Core\HLE\sceUtility.h" />
     <ClInclude Include="..\..\Core\HLE\sceVaudio.h" />
     <ClInclude Include="..\..\Core\HLE\sceIdStorage.h" />
+    <ClInclude Include="..\..\Core\HLE\sceResmgr.h" />
     <ClInclude Include="..\..\Core\HLE\sceChkreg.h" />
     <ClInclude Include="..\..\Core\HLE\sceVshBridge.h" />
     <ClInclude Include="..\..\Core\HLE\ThreadQueueList.h" />

@@ -769,6 +769,7 @@ EXEC_AND_LIB_FILES := \
   $(SRC)/Core/HLE/sceVaudio.cpp \
   $(SRC)/Core/HLE/sceVshBridge.cpp \
   $(SRC)/Core/HLE/sceIdStorage.cpp \
+  $(SRC)/Core/HLE/sceResmgr.cpp \
   $(SRC)/Core/HLE/sceChkreg.cpp \
   $(SRC)/Core/HLE/scePspNpDrm_user.cpp \
   $(SRC)/Core/HLE/sceGameUpdate.cpp \

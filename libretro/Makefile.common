@@ -843,6 +843,7 @@ SOURCES_CXX += \
 	       $(COREDIR)/HLE/sceVaudio.cpp \
 	       $(COREDIR)/HLE/sceVshBridge.cpp \
 	       $(COREDIR)/HLE/sceIdStorage.cpp \
+	       $(COREDIR)/HLE/sceResmgr.cpp \
 	       $(COREDIR)/HLE/sceChkreg.cpp \
 	       $(COREDIR)/HLE/scePspNpDrm_user.cpp \
 	       $(COREDIR)/HLE/sceNp.cpp \
