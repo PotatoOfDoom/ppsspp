@@ -36,6 +36,8 @@ enum pspUmdType {
 };
 
 void __UmdInit();
+// True if there is a disc in the drive. False only when booting the VSH, which has none.
+bool UmdDiscPresent();
 void __UmdDoState(PointerWrap &p);
 
 void __UmdReplace(const Path &filepath);

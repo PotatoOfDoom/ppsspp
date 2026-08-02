@@ -12,11 +12,14 @@ running. What comes out is a real frame from the real firmware, not something PP
 wave background with the clock and the battery indicator, and then the VSH's own dialogs, laid out
 with the fonts and `.rco` resources out of the dump.
 
-What it puts on screen once the opening animation ends is "This disc cannot be started. The region
-code is not correct." PPSSPP presents a UMD to it (`sceUmdActivate` succeeds, `disc0:` exists) but
-answers the devctls the VSH uses to identify the media with `UNIMPL`, so it decides it is holding an
-unplayable disc and says so instead of drawing the XrossMediaBar. **So it does not reach a usable
-XMB** — see [What's still missing](#whats-still-missing).
+Once the opening animation ends it draws **the XrossMediaBar itself** — the category row (Video,
+Game, Network, PlayStation Network), the item under the selected category, the clock and the battery
+— out of the dump's own resources and fonts.
+
+That is as far as this has been taken. The frame is real, but nothing beyond drawing it has been
+tried: input has not been wired up or tested, nothing has been started from the menu, and the
+categories that need a memory stick or a network are certain to want things PPSSPP does not answer
+yet. See [What's still missing](#whats-still-missing).
 
 To see the frame without a display, pause the emulator over the WebSocket debugger and read the
 framebuffer straight out of VRAM — it is at `0x04000000`/`0x04088000`, 480x272, stride 512, pixel
@@ -274,11 +277,27 @@ frames instead and lets the VSH reach its own UI. Zero is a guess; erroring is a
 This is done in the `sceVshBridge` wrappers only, so games calling `sceImpose` directly still get
 `INVALID_VALUE` for a param that does not exist.
 
-**Now it wants a UMD.** With the display staying on, the first thing the VSH does with it is put up
-"This disc cannot be started. The region code is not correct." `MountVSHFlash` leaves `disc0:`
-in place and `sceUmdActivate(1, "disc0:")` succeeds, but `sceIoDevctl("umd0:", 0x01f20001, ...)` -
-which it calls a dozen times - is `UNIMPL`, so it never gets a media type it recognises. Making the
-drive look empty rather than occupied by an unidentifiable disc is the obvious next thing to try.
+**The drive has to be empty, and PPSSPP said it wasn't.** With the display staying on, the first
+thing the VSH used to put up was "This disc cannot be started. The region code is not correct." It
+reads `umd_autoboot` out of the registry — 1 on a real dump, which is correct, that is what a PSP
+ships with — so if it is told a disc is in the drive it tries to start it, and complains when it
+can't. There is no disc: `sceUmdActivate(1, "disc0:")` is just the VSH spinning up the drive before
+it knows what is in it.
+
+Three places claimed a disc anyway, and all three had to be fixed before the message went away
+(fixing them one at a time only changed the wording — "region code is not correct" became "the disc
+could not be read"):
+
+- `__UmdInit` never assigned `UMDInserted`, so it kept the `true` its definition gives it. It is now
+  set from the boot type, which also means a UMD change from an earlier run in the same process
+  can't leak into the next one.
+- `sceIoDevctl("umd0:", 0x01F20001, ...)`, "get disc type", wrote `PSP_UMD_TYPE_GAME`
+  unconditionally — reasonable for a game, which has a disc by definition, wrong here.
+- `__KernelUmdActivate` notified the drive callback with `PSP_UMD_PRESENT | PSP_UMD_READABLE`
+  without looking at `UMDInserted` either, and that notification is what the VSH's
+  `SceVshMediaDetectUMD` callback reads.
+
+None of this changes anything for a game, where `UMDInserted` is true throughout.
 
 **`sceResmgr` is answered without decrypting anything** (`Core/HLE/sceResmgr.cpp`). It is the one
 library on that list the XMB has actually called, and the way out of it is worth writing down,

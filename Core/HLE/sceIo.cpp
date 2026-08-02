@@ -1681,10 +1681,13 @@ u32 sceIoDevctl(const char *name, int cmd, u32 argAddr, int argLen, u32 outPtr, 
 
 	// UMD checks
 	switch (cmd) {
-	case 0x01F20001:  
+	case 0x01F20001:
 		// Get UMD disc type
 		if (Memory::IsValidAddress(outPtr) && outLen >= 8) {
-			Memory::Write_U32(0x10, outPtr + 4);  // Always return game disc (if present)
+			// This used to answer "game disc" whatever the drive held, which is fine for a game -
+			// it has one by definition - but not for the VSH, which asks this to decide whether to
+			// autoboot and then complains it can't start the disc it was told about.
+			Memory::Write_U32(UmdDiscPresent() ? PSP_UMD_TYPE_GAME : 0, outPtr + 4);
 			return hleLogDebug(Log::sceIo, 0);
 		} else {
 			return hleLogError(Log::sceIo, SCE_ERROR_MEMSTICK_DEVCTL_BAD_PARAMS);
