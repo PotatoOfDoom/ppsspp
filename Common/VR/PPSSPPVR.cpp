@@ -590,7 +590,12 @@ bool StartVRRender() {
 
 		// Decide if the scene is 3D or not
 		VR_SetConfigFloat(VR_CONFIG_CANVAS_ASPECT, 480.0f / 272.0f);
-		bool vrStereo = !PSP_CoreParameter().compat.vrCompat().ForceMono && g_Config.bEnableStereo;
+		// Ask for the pass count rather than reading the setting directly: the stereo modes submit
+		// a second composition layer out of FrameBuffer[1], and a swapchain may only be referenced
+		// by a layer once it has actually had an image released this frame. A backend that renders
+		// a single pass never touches that swapchain, so claiming stereo here would get the whole
+		// frame rejected with XR_ERROR_LAYER_INVALID - a black headset, not a mono image.
+		bool vrStereo = GetVRPassesCount() > 1;
 		if (!IsBigScreenVRMode() && (appMode == VR_GAME_MODE)) {
 			VR_SetConfig(VR_CONFIG_MODE, vrStereo ? VR_MODE_STEREO_6DOF : VR_MODE_MONO_6DOF);
 			VR_SetConfig(VR_CONFIG_REPROJECTION, IsImmersiveVRMode() ? 0 : 1);
@@ -973,8 +978,10 @@ void UpdateVRViewMatrices() {
 
 	for (int matrix = VR_VIEW_MATRIX_LEFT_EYE; matrix <= VR_VIEW_MATRIX_RIGHT_EYE; matrix++) {
 
-		// Stereoscopy
-		bool vrStereo = !PSP_CoreParameter().compat.vrCompat().ForceMono && g_Config.bEnableStereo;
+		// Stereoscopy. Same reasoning as in the mode selection: if only one pass is rendered, the
+		// left eye matrix is the one that ends up on screen, and offsetting it by half an IPD
+		// would shift the mono image sideways instead of centering it.
+		bool vrStereo = GetVRPassesCount() > 1;
 		if (vrStereo && IsVREnabled()) {
 			bool mirrored = vrMirroring[VR_MIRRORING_AXIS_Z] ^ (matrix == VR_VIEW_MATRIX_RIGHT_EYE);
 			float dx = fabs(vrView[1].pose.position.x - vrView[0].pose.position.x);
