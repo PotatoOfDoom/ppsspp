@@ -202,8 +202,13 @@ void EnterVR(bool firstStart, void* vulkanContext) {
 			VR_EnterVR(engine, &engine->graphicsBindingVulkan);
 
 			// Decide on the swapchain format right away - the backbuffer render pass, which is
-			// created before we ever get to render a VR frame, needs to know it.
-			ovrFramebuffer_ChooseVulkanFormat(engine->appState.Session);
+			// created before we ever get to render a VR frame, needs to know it. If this fails the
+			// render pass gets baked with the window surface's format instead, and every VR
+			// framebuffer we later try to build against it is incompatible - which shows up as a
+			// permanently black headset rather than as an error, so say so loudly.
+			if (ovrFramebuffer_ChooseVulkanFormat(engine->appState.Session) == VK_FORMAT_UNDEFINED) {
+				ERROR_LOG(Log::G3D, "OpenXR: Could not determine a Vulkan swapchain format - VR rendering will not work");
+			}
 		} else {
 			VR_EnterVR(engine, nullptr);
 		}

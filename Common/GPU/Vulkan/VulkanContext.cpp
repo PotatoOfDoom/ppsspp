@@ -722,6 +722,13 @@ VkResult VulkanContext::CreateDevice(int physical_device) {
 	}
 	_dbg_assert_(found);
 
+	// Record the family we're actually creating the queue from. ChooseQueue() normally does this,
+	// but it needs a surface to test for present support, and in VR we have to hand the queue family
+	// index to OpenXR when binding the session - which happens before there is a surface.
+	// ChooseQueue() will overwrite this later with a present-capable family; on every device we
+	// support that is the same family, which the vkGetDeviceQueue() call there already relies on.
+	graphics_queue_family_index_ = queue_info.queueFamilyIndex;
+
 	// TODO: A lot of these are on by default in later Vulkan versions, should check for that, technically.
 	extensionsLookup_.KHR_maintenance1 = EnableDeviceExtension(VK_KHR_MAINTENANCE1_EXTENSION_NAME, VK_API_VERSION_1_1);
 	extensionsLookup_.KHR_maintenance2 = EnableDeviceExtension(VK_KHR_MAINTENANCE2_EXTENSION_NAME, VK_API_VERSION_1_1);

@@ -355,6 +355,10 @@ bool VR_InitFrame( engine_t* engine ) {
 
 	for (int i = 0; i < ovrMaxNumEyes; i++) {
 		ovrFramebuffer* frameBuffer = &engine->appState.Renderer.FrameBuffer[i];
+		if (!frameBuffer->TextureSwapChainLength) {
+			// Swapchain creation failed - don't divide by zero, and don't pretend we have an image.
+			continue;
+		}
 		frameBuffer->TextureSwapChainIndex++;
 		frameBuffer->TextureSwapChainIndex %= frameBuffer->TextureSwapChainLength;
 	}
