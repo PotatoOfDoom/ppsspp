@@ -8,12 +8,15 @@ out of the registry, loads the system fonts, opens the XMB's own resource files
 (`opening_plugin.rco`, `system_plugin.rco` and its `_bg`/`_fg` companions), loads and starts
 `opening_plugin.prx`, `impose_plugin.prx` and `mpeg_vsh.prx`, and **draws**: it sets the display
 mode, renders through the GE and flips between two framebuffers in VRAM for as long as it is left
-running. What comes out is the XMB's wave background with the clock and the battery indicator on it,
-which is a real frame from the real firmware, not something PPSSPP draws.
+running. What comes out is a real frame from the real firmware, not something PPSSPP draws — the
+wave background with the clock and the battery indicator, and then the VSH's own dialogs, laid out
+with the fonts and `.rco` resources out of the dump.
 
-What is *not* there is the XrossMediaBar itself — the icon rows are drawn by `system_plugin.prx`,
-which never gets loaded, even though the VSH opens its `.rco` resources. **So it does not reach a
-usable XMB** — see [What's still missing](#whats-still-missing).
+What it puts on screen once the opening animation ends is "This disc cannot be started. The region
+code is not correct." PPSSPP presents a UMD to it (`sceUmdActivate` succeeds, `disc0:` exists) but
+answers the devctls the VSH uses to identify the media with `UNIMPL`, so it decides it is holding an
+unplayable disc and says so instead of drawing the XrossMediaBar. **So it does not reach a usable
+XMB** — see [What's still missing](#whats-still-missing).
 
 To see the frame without a display, pause the emulator over the WebSocket debugger and read the
 framebuffer straight out of VRAM — it is at `0x04000000`/`0x04088000`, 480x272, stride 512, pixel
@@ -239,12 +242,12 @@ that sets only position and access, no partition IDs. It is exported under three
 stub, because nothing has called it yet. With this in place a boot loads and starts
 `opening_plugin.prx`, `impose_plugin.prx` and `flash0:/kd/mpeg_vsh.prx`.
 
-**`system_plugin.prx` is the one that matters next.** It draws the XrossMediaBar itself — the icon
-rows — and the VSH opens its resources (`system_plugin.rco`, `system_plugin_bg.rco`,
-`system_plugin_fg.rco`) but never asks to load the module, so the frame that comes out has the
-background, the clock and the battery on it and nothing else. Whatever decides to load it is the
-thing to chase: it is not blocked on `vshKernelLoadModuleVSH` any more, so it is a decision the VSH
-makes and has not.
+**There is no `system_plugin.prx`, and there never was.** It is easy to assume the XrossMediaBar
+comes from a plugin of its own, because the VSH opens `system_plugin.rco`, `system_plugin_bg.rco`,
+`system_plugin_fg.rco`, `topmenu_plugin.rco` and `topmenu_icon.rco` early in the boot. Those are
+resources; `vsh/module/` holds only `vshmain`, `paf`, `pafmini`, `common_gui`, `common_util` and the
+media plugins. The top menu is `vshmain`'s own code, and it has everything it needs by the time the
+opening animation starts — so a missing module is never the reason the bar is absent.
 
 The plugins then poll two things every frame — about 17,000 calls each in a minute of running — and
 they are worth understanding because they are opposite cases. `scePowerIsSuspendRequired` was a
@@ -260,6 +263,22 @@ which is reason enough to deal with a hot stub even when it turns out to be harm
 Note also `sceKernelLoadModule: unsupported options` in the log — the `SceKernelLMOption` the VSH
 passes is accepted but its position/access fields are discarded, which ties into the privilege-model
 gap below.
+
+**An unknown impose param used to end the boot.** The XMB reads impose params `0x1000` and
+`0x20000000` and writes `0x80000007`, and `sceImpose.cpp` knows none of them — they are in no
+documentation either. Returning `INVALID_VALUE` to say so turned out to be fatal: the VSH takes the
+error on `0x20000000` as a reason to give up, calls `sceDisplaySetFrameBuf(0, 0, 0, 1)` and stops
+presenting, which is why a boot used to end after exactly 352 frames with the last one frozen in
+VRAM. Reporting zero for a param we don't know, and ignoring a write to one, gets thousands of
+frames instead and lets the VSH reach its own UI. Zero is a guess; erroring is a measured mistake.
+This is done in the `sceVshBridge` wrappers only, so games calling `sceImpose` directly still get
+`INVALID_VALUE` for a param that does not exist.
+
+**Now it wants a UMD.** With the display staying on, the first thing the VSH does with it is put up
+"This disc cannot be started. The region code is not correct." `MountVSHFlash` leaves `disc0:`
+in place and `sceUmdActivate(1, "disc0:")` succeeds, but `sceIoDevctl("umd0:", 0x01f20001, ...)` -
+which it calls a dozen times - is `UNIMPL`, so it never gets a media type it recognises. Making the
+drive look empty rather than occupied by an unidentifiable disc is the obvious next thing to try.
 
 **`sceResmgr` is answered without decrypting anything** (`Core/HLE/sceResmgr.cpp`). It is the one
 library on that list the XMB has actually called, and the way out of it is worth writing down,

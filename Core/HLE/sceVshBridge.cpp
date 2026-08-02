@@ -41,6 +41,8 @@
 // (sceIdStorage.cpp) and the impose params (sceImpose.cpp). The rest report UNIMPL, so the log
 // tells you what the VSH actually asked for instead of trapping anonymously. See docs/XMB.md.
 
+#include <set>
+
 #include "Core/HLE/HLE.h"
 #include "Core/HLE/ErrorCodes.h"
 #include "Core/HLE/FunctionWrappers.h"
@@ -134,17 +136,40 @@ static int vshImposeChanges() {
 // The XMB reaches the impose params through here rather than through sceImpose_driver, which is
 // just as well - that library's NIDs were obfuscated from firmware 3.70 on and its names were never
 // recovered, so it can't be implemented. See sceImpose.h.
+//
+// The XMB asks for three params sceImpose.cpp has never heard of - it reads 0x1000 and 0x20000000
+// and writes 0x80000007 - and none of them appear in any documentation. Answering INVALID_VALUE is
+// not a safe way to admit that: the VSH takes the error on 0x20000000 as fatal and blanks the
+// screen with sceDisplaySetFrameBuf(0, 0, 0, 1), which is why a boot used to stop presenting after
+// exactly 352 frames. Reporting zero instead lets it carry on (3000+ frames and counting) and reach
+// its own UI. Zero is a guess, but erroring is a measurably wrong one; say so in the log the first
+// time each unknown param shows up, so it stays visible without drowning a per-frame caller.
+//
+// This only affects VSH-mode firmware, which is the only thing that can reach sceVshBridge. Games
+// go through sceImpose directly and still get INVALID_VALUE for a param that doesn't exist.
+static bool ReportUnknownImposeParam(int param) {
+	static std::set<int> reported;
+	return reported.insert(param).second;
+}
+
 static int vshImposeGetParam(int param) {
 	int value = 0;
 	if (!ImposeGetParam(param, &value)) {
-		return hleLogError(Log::HLE, SCE_KERNEL_ERROR_INVALID_VALUE, "unknown impose param %03x", param);
+		if (ReportUnknownImposeParam(param)) {
+			return hleLogWarning(Log::HLE, 0, "impose param %08x is not one we know - reporting 0", param);
+		}
+		return hleLogDebug(Log::HLE, 0, "unknown impose param %08x", param);
 	}
 	return hleLogDebug(Log::HLE, value, "%s", ImposeParamName(param));
 }
 
 static int vshImposeSetParam(int param, int value) {
 	if (!ImposeSetParam(param, value)) {
-		return hleLogError(Log::HLE, SCE_KERNEL_ERROR_INVALID_VALUE, "impose param %03x (%s) rejected", param, ImposeParamName(param));
+		if (ReportUnknownImposeParam(param)) {
+			return hleLogWarning(Log::HLE, 0, "impose param %08x is not one we know - ignoring the write of %d",
+				param, value);
+		}
+		return hleLogDebug(Log::HLE, 0, "unknown impose param %08x", param);
 	}
 	return hleLogDebug(Log::HLE, 0, "%s = %d", ImposeParamName(param), value);
 }
