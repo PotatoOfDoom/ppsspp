@@ -361,6 +361,15 @@ void ElfReader::LoadRelocations2(int rel_seg)
 				ERROR_LOG_REPORT(Log::Loader, "Rel2: invalid lo16 type! %x", flag);
 			}
 
+			// The (flag&0x38)==0x08 case above means "reuse the previous entry's lo16", which is how
+			// the encoder writes a second lui for an address whose matching addiu it already emitted
+			// a lo16 for - a loop that rebuilds the same pointer, typically. It only applies when
+			// that previous entry was a HI16, hence the check, so we have to record the type here.
+			// Leaving last_type at -1 forever made every such entry fall back to lo16 = 0, which
+			// drops the +1 carry whenever the real low half is negative, putting the lui 0x10000
+			// below the symbol. Silent, deterministic, and far from where it goes wrong.
+			last_type = type;
+
 			op = Memory::Read_Instruction(rel_offset, true).encoding;
 			VERBOSE_LOG(Log::Loader, "Rel2: %5d: CMD=0x%04X flag=%x type=%d off_seg=%d offset=%08x addr_seg=%d op=%08x", rcount, cmd, flag, type, off_seg, rel_base, addr_seg, op);
 

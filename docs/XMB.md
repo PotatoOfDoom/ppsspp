@@ -305,6 +305,17 @@ without moving firmware around. Modules have to be decrypted first.
   read anything into them beyond "what does it try next".
 - `PPSSPPHeadless --debugger=PORT` breaks before anything runs, so you can step from the first
   instruction. See [WebSocketDebugger.md](WebSocketDebugger.md), and `Tools/wsdbg/`.
+- **A deterministic bad pointer is not always a missing import.** The first real blocker here turned
+  out to be a loader bug, not an HLE gap: `LoadRelocations2` never recorded `last_type`, so the
+  "reuse the previous entry's lo16" form of a `R_MIPS_HI16` relocation always fell back to an addend
+  of 0. That drops the +1 carry when the low half is negative, and the `lui` ends up pointing
+  0x10000 below the symbol. In `vshmain` this hit exactly one of the two `lui`s that build the alarm
+  table address, so a loop bound was read out of an unrelated float table as 0x3F666666 (`0.9f`) and
+  the loop walked off the end of a 1-element array. It looks like anything but a relocation problem:
+  no error, no stub, identical on every run. If a pointer is wrong but *stable*, compare the
+  disassembly of the loaded code against the module on disk before hunting for a missing function -
+  `memory.disasm` over the WebSocket debugger shows the relocated instruction, which is the one that
+  matters.
 - Watch for `no module provides library` lines at boot — that's the definitive list of what's
   missing, printed once, before anything can go wrong because of it. At runtime, an actual call
   through such a stub logs `Unresolved import <library>/<nid> called from '<module>'`; that lookup
