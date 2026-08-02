@@ -107,6 +107,12 @@ void BaseUpdateUniforms(UB_VS_FS_Base *ub, uint64_t dirtyUniforms, bool useBuffe
 				ipd = measured;
 			}
 		}
+		if (PSP_CoreParameter().compat.vrCompat().ForceMono) {
+			// The structure stays stereo - two layers, multiview render passes, the lot - because
+			// that is fixed for the session. Collapsing the offset gives both eyes the same image,
+			// which is what this compat flag is after, without anything having to change shape.
+			ipd = 0.0f;
+		}
 		float scale = 1.0f;
 		if (PSP_CoreParameter().compat.vrCompat().UnitsPerMeter > 0) {
 			scale = PSP_CoreParameter().compat.vrCompat().UnitsPerMeter;

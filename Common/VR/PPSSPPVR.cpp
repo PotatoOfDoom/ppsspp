@@ -61,6 +61,7 @@ static XrView vrView[2];
 // that early: the OpenXR swapchains are created on the first VR frame, which happens while the UI
 // is still rendering - long before a game (and with it GPU_Vulkan) exists.
 static bool vrVulkanMultiviewSupported = false;
+static bool vrVulkanStereo = false;
 
 static void (*cbNativeAxis)(const AxisInput *axis, size_t count);
 static bool (*cbNativeKey)(const KeyInput &key);
@@ -205,6 +206,16 @@ void EnterVR(bool firstStart, void* vulkanContext) {
 			engine->graphicsBindingVulkan.queueFamilyIndex = context->GetGraphicsQueueFamilyIndex();
 			engine->graphicsBindingVulkan.queueIndex = 0;
 			vrVulkanMultiviewSupported = context->GetDeviceFeatures().enabled.multiview.multiview != 0;
+			// Latch stereo here, once, and never let it move again. The OpenXR swapchain array
+			// size, the render pass type and the pipeline variants we compile are all built for
+			// this answer and have to keep agreeing for as long as those objects live. Games can
+			// carry their own config, and switching to it mid-frame used to flip this and leave
+			// the command buffer recording against a render pass the framebuffer wasn't made for,
+			// which fails the whole submit. Changing the setting takes effect on the next start.
+			vrVulkanStereo = vrVulkanMultiviewSupported && g_Config.bEnableStereo;
+			INFO_LOG(Log::G3D, "VR: single-pass stereo %s (multiview %s)",
+				vrVulkanStereo ? "enabled" : "disabled",
+				vrVulkanMultiviewSupported ? "supported" : "unsupported");
 			VR_EnterVR(engine, &engine->graphicsBindingVulkan);
 
 			// Decide on the swapchain format right away - the backbuffer render pass, which is
@@ -679,10 +690,7 @@ bool IsVRVulkanRenderer() {
 }
 
 bool IsVRVulkanStereo() {
-	if (!IsVRVulkanRenderer() || !vrVulkanMultiviewSupported) {
-		return false;
-	}
-	return !PSP_CoreParameter().compat.vrCompat().ForceMono && g_Config.bEnableStereo;
+	return vrVulkanStereo;
 }
 
 void GetVRVulkanInstanceExtensions(std::vector<std::string> *extensions) {
