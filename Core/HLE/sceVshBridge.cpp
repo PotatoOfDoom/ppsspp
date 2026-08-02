@@ -24,10 +24,11 @@
 //
 // Two things to know before adding to this table:
 //
-//  * SCE obfuscated the kernel NIDs in later firmwares, so unlike user-mode libraries these are
-//    NOT SHA-1(name) and they differ between firmware versions. Only 21 of the names below hash
-//    to their NID; the rest were recovered by comparing modules across firmwares. A dump of a
-//    firmware older than 6.60 will not resolve against this table.
+//  * SCE obfuscated the kernel NIDs from firmware 3.70 on, so unlike user-mode libraries these are
+//    NOT SHA-1(name) and they differ between firmware versions. (Measured over PSPLibDoc's named
+//    *_driver exports: 98% hash to their NID on 3.60, 37% on 3.70, 47% on 6.61.) Only 21 of the
+//    names below hash to their NID; the rest were recovered by comparing modules across firmwares.
+//    A dump of a firmware older than 6.60 will not resolve against this table.
 //  * Where one name appears under several NIDs, those are the per-hardware-model builds of
 //    vshbridge.prx (01g, 02g, ...), which we give the same implementation.
 //
@@ -103,7 +104,7 @@ static int vshIdStorageLookup(u32 leafId, u32 offset, u32 bufPtr, u32 len) {
 }
 
 // The XMB reaches the impose params through here rather than through sceImpose_driver, which is
-// just as well - that library's NIDs were obfuscated from firmware 6.20 on and its names were never
+// just as well - that library's NIDs were obfuscated from firmware 3.70 on and its names were never
 // recovered, so it can't be implemented. See sceImpose.h.
 static int vshImposeGetParam(int param) {
 	int value = 0;

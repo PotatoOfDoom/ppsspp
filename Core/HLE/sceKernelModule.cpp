@@ -793,16 +793,42 @@ bool KernelFindImportByStubAddr(u32 stubAddr, std::string *importModuleName, u32
 	return false;
 }
 
-// Lists the imports left as the plain "invalid syscall" trap WriteFuncMissingStub writes - either
-// because nothing provides the library at all, or because it's a library we HLE but the NID isn't
-// in our table. Calling one of those returns SCE_KERNEL_ERROR_LIBRARY_NOT_YET_LINKED, and callers
-// that don't check the return value tend to use it as a pointer and crash far away from the actual
-// cause - so it's much easier to debug as a list up front. Only useful when running real firmware
-// modules; for games everything either resolves or is HLE'd.
+// True if no loaded module exports this variable. There's no trap for a variable import the way
+// there is for a function - ImportVarSymbol just skips the relocation - so we have to ask.
+static bool VarImportIsUnresolved(const VarSymbolImport &var) {
+	u32 error;
+	for (SceUID moduleId : loadedModules) {
+		PSPModule *module = kernelObjects.Get<PSPModule>(moduleId, error);
+		if (!module || !module->ImportsOrExportsModuleName(var.moduleName)) {
+			continue;
+		}
+		for (const auto &exported : module->exportedVars) {
+			if (exported.Matches(var)) {
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
+// Lists the imports nothing ended up providing - either because nothing provides the library at
+// all, or because it's a library we HLE but the NID isn't in our table. An unresolved function is
+// left as the plain "invalid syscall" trap WriteFuncMissingStub writes and returns
+// SCE_KERNEL_ERROR_LIBRARY_NOT_YET_LINKED when called; callers that don't check the return value
+// tend to use it as a pointer and crash far away from the actual cause.
+//
+// Unresolved *variables* are quieter and worse: ImportVarSymbol skips the relocation entirely, so
+// the lui/addiu pair keeps whatever immediate was baked into the PRX. There's no trap, no error
+// return, and the resulting bad pointer is identical on every run - which makes it look like
+// anything but a linking problem. Both are worth knowing up front, so report both.
+//
+// Only useful when running real firmware modules; for games everything either resolves or is HLE'd.
 void KernelLogUnresolvedImports(const char *context) {
 	struct Unresolved {
-		int count = 0;
+		int funcs = 0;
+		int vars = 0;
 		u32 firstNid = 0;
+		u32 firstVarNid = 0;
 	};
 	std::map<std::string, Unresolved> unresolved;
 
@@ -816,13 +842,24 @@ void KernelLogUnresolvedImports(const char *context) {
 			if (!Memory::IsValid4AlignedAddress(func.stubAddr + 4)) {
 				continue;
 			}
-			// The "no module index, no function index" syscall - see GetSyscallOp("", nid).
+			// The "no module index, no function index" syscall. WriteFuncMissingStub always writes
+			// GetSyscallOp("", nid), so this is the same opcode whether the library is one we HLE
+			// or one we've never heard of - the distinction is made below, from the name.
 			if (Memory::Read_Instruction(func.stubAddr + 4) != 0x03FFFFCC) {
 				continue;
 			}
 			Unresolved &entry = unresolved[func.moduleName];
-			if (entry.count++ == 0) {
+			if (entry.funcs++ == 0) {
 				entry.firstNid = func.nid;
+			}
+		}
+		for (const auto &var : module->importedVars) {
+			if (!VarImportIsUnresolved(var)) {
+				continue;
+			}
+			Unresolved &entry = unresolved[var.moduleName];
+			if (entry.vars++ == 0) {
+				entry.firstVarNid = var.nid;
 			}
 		}
 	}
@@ -832,14 +869,22 @@ void KernelLogUnresolvedImports(const char *context) {
 		return;
 	}
 	for (const auto &[library, entry] : unresolved) {
+		if (entry.vars != 0) {
+			WARN_LOG(Log::Loader, "%s: library '%s' has %d unresolved VARIABLE import(s), e.g. %08x - "
+				"those relocations were skipped, so the module holds whatever address was baked into it",
+				context, library.c_str(), entry.vars, entry.firstVarNid);
+		}
+		if (entry.funcs == 0) {
+			continue;
+		}
 		// Separate the two cases - "we've never heard of this library" is a very different piece of
 		// work from "we have it, these particular NIDs just aren't in the table yet".
 		if (GetHLEModuleIndex(library) != -1) {
 			WARN_LOG(Log::Loader, "%s: HLE library '%s' is missing %d NID(s), e.g. %08x",
-				context, library.c_str(), entry.count, entry.firstNid);
+				context, library.c_str(), entry.funcs, entry.firstNid);
 		} else {
 			WARN_LOG(Log::Loader, "%s: no module provides library '%s' (%d unresolved function(s), e.g. %08x)",
-				context, library.c_str(), entry.count, entry.firstNid);
+				context, library.c_str(), entry.funcs, entry.firstNid);
 		}
 	}
 }

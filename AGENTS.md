@@ -89,7 +89,9 @@ small examples to copy from). A module is a `const HLEFunction <name>[]` table o
   New `.h` files go everywhere except `Android.mk`/`Makefile.common` (those are plain compiled-source lists so
   headers don't go in them). Only the CMakeLists.txt change can be verified from a Linux/Mac build - the rest can't
   be build-tested here, so double check them by hand against how an existing neighboring file (e.g. `sceVaudio.cpp`)
-  is listed in each; `grep -rl sceVaudio.cpp .` lists every file that needs an entry.
+  is listed in each. To list them: `rg -l 'sceVaudio\.cpp' --glob '!build*/**' .` - that gives the seven lists plus
+  this file. (Plain `grep -rl` also walks `.git` and any build directory, which takes minutes and buries the
+  seven real hits among object files and link scripts.)
   Note: New files in the unittest project have to be updated in the unittest part in android/jni/Android.mk.
 
 ## WebSocket debugger

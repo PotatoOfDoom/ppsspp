@@ -581,9 +581,11 @@ static std::string ModuleAddressSuffix(u32 address) {
 // compiled block rather than the faulting instruction, so we'd confidently name the wrong one, and
 // the register file is only synced at block boundaries anyway.
 static std::string FaultingInstructionDetails(u32 pc) {
-	// Test what's actually running rather than g_Config - headless takes its CPU core from the
-	// command line without writing it back to the config, so the two can disagree. A null jit is
-	// exactly the plain interpreter; the IR interpreter has one and runs blocks like a JIT does.
+	// Ask what's actually running rather than g_Config: headless pins g_Config.iCpuCore to
+	// INTERPRETER (Headless.cpp) and only overwrites it if a CPU flag was passed, while
+	// PSP_CoreParameter().cpuCore defaults to JIT - so with no flag the config claims interpreter
+	// and a JIT is running. A null jit is exactly the plain interpreter; the IR interpreter has one
+	// and runs blocks like a JIT does.
 	if (MIPSComp::jit != nullptr || !Memory::IsValid4AlignedAddress(pc)) {
 		return std::string();
 	}
@@ -603,11 +605,12 @@ static std::string FaultingInstructionDetails(u32 pc) {
 
 void Core_MemoryException(u32 address, u32 accessSize, u32 pc, MemoryExceptionType type, std::string_view additionalInfo, bool forceReport) {
 	const char *desc = MemoryExceptionTypeAsString(type);
-	// In jit, we only flush PC when bIgnoreBadMemAccess is off.
 
+	// Only the interpreter has an exact pc and ra here - see FaultingInstructionDetails for why
+	// this asks about the jit rather than the config.
 	char pcDetails[128];
 	pcDetails[0] = 0;
-	if ((CPUCore)g_Config.iCpuCore == CPUCore::INTERPRETER) {
+	if (MIPSComp::jit == nullptr) {
 		snprintf(pcDetails, sizeof(pcDetails), " PC %08x%s LR %08x%s", currentMIPS->pc, ModuleAddressSuffix(currentMIPS->pc).c_str(), currentMIPS->r[MIPS_REG_RA], ModuleAddressSuffix(currentMIPS->r[MIPS_REG_RA]).c_str());
 	}
 	const std::string instructionDetails = FaultingInstructionDetails(pc);

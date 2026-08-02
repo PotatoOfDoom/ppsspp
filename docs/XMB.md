@@ -106,9 +106,10 @@ Also relevant, outside that function:
   `sceKernelCreateThread`, and `__KernelStartModule`, which passes a module's *module* attribute
   as the thread attribute when the module has no `module_start` — and `0x0800` is not a legal
   user thread attribute.
-- After the shared modules are loaded, `KernelLogUnresolvedImports` lists every import library
-  that nothing provides, so a missing module shows up as one clear line at boot instead of as a
-  crash somewhere in the middle of `vshmain`.
+- After the shared modules are loaded, `KernelLogUnresolvedImports` lists every import nothing
+  provides, so a missing module shows up as one clear line at boot instead of as a crash somewhere
+  in the middle of `vshmain`. It reports functions and *variables* separately — see below for why
+  the variables matter more than they look.
 
 ## What's still missing
 
@@ -164,12 +165,15 @@ library X" versus "HLE library X is missing N NID(s)".
 
 Two things learned while adding those, which shape what else is possible:
 
-**Kernel NIDs are obfuscated and firmware-specific.** SCE scrambled them in later firmwares, so for
-kernel libraries the NID is *not* SHA-1(name) and it differs per firmware version. The tables target
-**6.61** and will not resolve against an older dump. Worse, for some libraries the names were never
-recovered at all — `sceImpose_driver` has 31 exports on 6.61 and *zero* known names (they're known
-up to 5.00, before obfuscation), so that library simply cannot be implemented for a modern dump.
-Check [PSPLibDoc](https://github.com/pspdev/psplibdoc) before planning work on one.
+**Kernel NIDs are obfuscated and firmware-specific.** For kernel libraries the NID is *not*
+SHA-1(name) and it differs per firmware version, so the tables target **6.61** and will not resolve
+against an older dump. The switch is sharp and easy to measure against PSPLibDoc: counting named
+`*_driver` exports whose NID equals the first four bytes of SHA-1(name), firmware 3.60 is at
+1476/1499 (98%) and 3.70 drops to 553/1462 (37%) — everything from 3.70 on is partly scrambled, and
+6.61 sits at 663/1390 (47%). Worse, for some libraries the names were never recovered at all —
+`sceImpose_driver` has 31 exports on 6.61 and *zero* known names — so that library simply cannot be
+implemented for a modern dump. Check [PSPLibDoc](https://github.com/pspdev/psplibdoc) before
+planning work on one.
 
 **The VSH mostly doesn't call these libraries directly** — it goes through `sceVshBridge`, whose
 names *are* largely known. So `vshImposeGetParam`/`vshImposeSetParam` are implemented against
@@ -193,6 +197,15 @@ That is why a table entry that admits it does nothing beats no entry at all, and
 `nullptr` entries in existing modules too — those return the same error and never write their output
 parameters, so the caller reads whatever was on its stack.
 
+An unresolved **variable** import is quieter and worse. `ImportVarSymbol` skips the relocation
+entirely, so the `lui`/`addiu` pair keeps whatever immediate the PRX was built with: no trap, no
+error return, and a bad pointer that is *identical on every run*. That last property makes it look
+like anything but a linking problem — a deterministic garbage address is easy to mistake for
+uninitialised-but-stable stack. There is no stub to inspect the way there is for a function, so
+`KernelLogUnresolvedImports` has to ask whether any loaded module exports the variable; it does, and
+reports those separately. The only other trace is one `INFO` line per reference at load time,
+`Variable (<library>,<nid>) unresolved, storing for later resolving`.
+
 Every function the XMB imports **by name** now has an implementation. The ones that were `nullptr`
 until it asked for them: `sceRtcGetAlarmTick`, `sceRtcIsAlarmed`, `sceRtcRegisterCallback` and
 `sceRtcUnregisterCallback` (there is no alarm hardware, so they report none set),
@@ -213,7 +226,7 @@ Adding these follows the normal recipe in `AGENTS.md`. For NIDs and names, use
 [PSPLibDoc](https://github.com/pspdev/psplibdoc) (GPL-2.0) — it has per-firmware exports for every
 module, and marks which names hash to their NID. For user-mode libraries the NID is the first four
 bytes of the SHA-1 of the export name read little-endian, which is a cheap way to check a name/NID
-pair; for kernel libraries on later firmwares it is not, because SCE obfuscated them.
+pair; for kernel libraries from firmware 3.70 on it is not, because SCE obfuscated them.
 
 `scePaf` (the VSH's whole widget/resource framework) does **not** need HLE — `paf.prx` is a real
 module in the dump and runs as-is, and PPSSPP now loads it (see the boot path above). Nothing in
