@@ -306,11 +306,26 @@ just read out of `/CONFIG/SYSTEM/CHARACTER_SET/oem` (5 on this dump), and `flash
 is the table it refers to. There is nothing to apply — `ms0:` is a host directory here and PPSSPP
 never deals in 8.3 short names — but the old answer was `SCE_KERNEL_ERROR_UNSUP`, and an error to a
 settings push is the kind of thing that bit us with the impose params. It is answered now, and a
-boot has no unanswered devctls left. It changed nothing visible, which is worth saying: the memory
-stick is not why the media categories are empty.
+boot has no unanswered devctls left. It changed nothing visible.
 
-They are empty because there is nothing on it. `memstick/PSP/GAME` in a fresh build really is empty,
-so the Game column having no games in it is the correct result, not a bug to chase.
+**The XMB never looks at the memory stick, or at anything else.** Putting homebrew in
+`memstick/PSP/GAME` does not make it appear in the Game column — and the reason is worth knowing,
+because it explains more than the memory stick. Over a whole boot the VSH calls `sceIoDopen`
+**zero** times. It never lists a directory, anywhere. All it does with the memory stick is three
+devctls: register a callback, set the code page, ask the capacity. It never enumerates it.
+
+That ties three separate-looking symptoms together:
+
+- homebrew on the memory stick doesn't show up
+- the media categories are empty
+- choosing an item does nothing
+
+The XMB is drawing its shell — the bar, the clock, the battery, and the fixed entries like "Saved
+Data Utility", which is built in rather than scanned for — but the layer that fills categories with
+content never starts. That layer is the per-category plugins: `game_plugin.prx`, `video_plugin.prx`,
+`music_main_plugin.prx`, `photo_main_plugin.prx`. Only `opening_plugin.prx`, `impose_plugin.prx` and
+`mpeg_vsh.prx` are ever loaded, and the loading mechanism demonstrably works, so the question is not
+how to load them but what makes the VSH ask.
 
 **Input works; starting anything does not.** Injecting buttons over the WebSocket debugger
 (`input.buttons.press`) moves the bar between categories and redraws the column, icons and text and
