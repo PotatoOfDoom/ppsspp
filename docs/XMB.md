@@ -299,6 +299,40 @@ could not be read"):
 
 None of this changes anything for a game, where `UMDInserted` is true throughout.
 
+**Input works; starting anything does not.** Injecting buttons over the WebSocket debugger
+(`input.buttons.press`) moves the bar between categories and redraws the column, icons and text and
+all. Note the confirm button is **circle**, not cross — PPSSPP's registry dump came off a
+Japanese-configured PSP, and `/CONFIG/SYSTEM/XMB/button_assign` reads 1.
+
+Choosing an item is a different story. Both "Internet Browser" and "Saved Data Utility" do the same
+thing: the bar animates away, and then it comes back, with nothing having happened. That is not a
+crash and not a missing library — over a 1.1-million-line boot-and-press log there is no bad access,
+no assert, no unresolved import called, and no mention of `htmlviewer_plugin.prx` at all. The
+`vshKernelLoadExecVSH*` entry points are imported but never called, and pressing the button produces
+*no HLE activity whatsoever* beyond the once-a-second clock and battery polls. So the VSH decides
+against launching entirely on its own, without asking PPSSPP anything, and finding out why means
+reverse engineering `vshmain`'s menu dispatcher rather than watching what it calls.
+
+One suspect has been ruled out, which is worth writing down so nobody re-runs it.
+`sceVshBridge_D3A07961` is by far the most-called stub - about twice a frame, ~8,000 times in a
+boot - so it looked like a natural culprit. Read off its call site in `paf.prx`, it is:
+
+```c
+int get_cached_value() {
+    u32 out[4];
+    if (sceVshBridge_D3A07961(&out, 0, 1, 0) != 0) {
+        g_cached = out[2];   // changed - take the new value
+        return out[2];
+    }
+    return g_cached;         // unchanged - keep the old one
+}
+```
+
+The return value is a "did this change?" flag and the payload arrives at offset 8 of the output
+buffer. Returning 0 means "nothing changed", so `paf` falls back on its cache - which stays 0,
+because nothing ever fills it. That is benign, unlike the impose params above where *erroring* was
+the damaging answer, and it is not why items don't start.
+
 **`sceResmgr` is answered without decrypting anything** (`Core/HLE/sceResmgr.cpp`). It is the one
 library on that list the XMB has actually called, and the way out of it is worth writing down,
 because the obvious reading — "this needs Sony's crypto, so it is out of reach" — turns out to be
