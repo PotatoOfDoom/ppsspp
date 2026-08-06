@@ -299,6 +299,19 @@ could not be read"):
 
 None of this changes anything for a game, where `UMDInserted` is true throughout.
 
+**The memory stick was one devctl short, and it did not matter.** `sceIoDevctl("fatms0:",
+0x02425856, ...)` was the only command the VSH sent that PPSSPP did not answer, and it turns out to
+be "set the FAT driver's OEM code page": the VSH sends it once at startup with the four bytes it has
+just read out of `/CONFIG/SYSTEM/CHARACTER_SET/oem` (5 on this dump), and `flash0:/codepage/cptbl.dat`
+is the table it refers to. There is nothing to apply — `ms0:` is a host directory here and PPSSPP
+never deals in 8.3 short names — but the old answer was `SCE_KERNEL_ERROR_UNSUP`, and an error to a
+settings push is the kind of thing that bit us with the impose params. It is answered now, and a
+boot has no unanswered devctls left. It changed nothing visible, which is worth saying: the memory
+stick is not why the media categories are empty.
+
+They are empty because there is nothing on it. `memstick/PSP/GAME` in a fresh build really is empty,
+so the Game column having no games in it is the correct result, not a bug to chase.
+
 **Input works; starting anything does not.** Injecting buttons over the WebSocket debugger
 (`input.buttons.press`) moves the bar between categories and redraws the column, icons and text and
 all. Note the confirm button is **circle**, not cross — PPSSPP's registry dump came off a

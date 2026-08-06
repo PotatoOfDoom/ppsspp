@@ -1955,7 +1955,19 @@ u32 sceIoDevctl(const char *name, int cmd, u32 argAddr, int argLen, u32 outPtr, 
 				}
 			}
 			break;
-		case 0x02415823:  
+		case 0x02425856:
+			// Set the OEM code page the FAT driver uses for 8.3 short names. The VSH sends this
+			// once at startup, immediately after reading /CONFIG/SYSTEM/CHARACTER_SET/oem, with
+			// that exact value; flash0:/codepage/cptbl.dat is the table it refers to. There is
+			// nothing to apply here - ms0: is a host directory and PPSSPP never sees a short name -
+			// but answering SCE_KERNEL_ERROR_UNSUP to a plain settings push is worse than saying
+			// it was accepted.
+			if (Memory::IsValidRange(argAddr, 4)) {
+				return hleLogDebug(Log::sceIo, 0, "set FAT OEM code page %d (nothing to apply)",
+					Memory::Read_U32(argAddr));
+			}
+			return hleLogError(Log::sceIo, SCE_KERNEL_ERROR_ERRNO_INVALID_ARGUMENT, "no code page");
+		case 0x02415823:
 			// Set FAT as enabled
 			if (Memory::IsValidAddress(argAddr) && argLen == 4) {
 				MemoryStick_SetFatState((MemStickFatState)Memory::Read_U32(argAddr));
