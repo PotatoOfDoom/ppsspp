@@ -327,6 +327,22 @@ content never starts. That layer is the per-category plugins: `game_plugin.prx`,
 `mpeg_vsh.prx` are ever loaded, and the loading mechanism demonstrably works, so the question is not
 how to load them but what makes the VSH ask.
 
+Breaking on the `vshKernelLoadModuleVSH` import stub and reading the caller each time says where to
+look. `mpeg_vsh.prx` is a one-off, loaded straight from `vshmain` (`ra = 0x0881005c`). The two
+plugins both come through a single generic routine in `paf.prx` (`ra = 0x0889ef6c` for both), which
+does the same three things each time: create an object, hand it the path with a type argument of 3,
+and store it in a slot. The bridge call itself is indirect, through a function pointer in paf's own
+dispatch table at `0x089ED428`, so this is a method on a plugin object rather than anything specific
+to those two modules — `game_plugin.prx` would take exactly the same route.
+
+So the gate is above that routine, in whatever decides to create a plugin object at all. Getting
+there is harder than it sounds: PPSSPP's debugger has no backtrace, and picking saved return
+addresses out of the stack by eye gives plausible but wrong answers (one such address turned out to
+belong to an unrelated call). The two approaches that should work are a conditional breakpoint on
+the load routine that ignores the two known paths, or finding the plugin descriptor table
+statically — the paths are assembled at runtime from name fragments in `vshmain`'s data, so whatever
+iterates those fragments is the dispatcher.
+
 **Input works; starting anything does not.** Injecting buttons over the WebSocket debugger
 (`input.buttons.press`) moves the bar between categories and redraws the column, icons and text and
 all. Note the confirm button is **circle**, not cross — PPSSPP's registry dump came off a
