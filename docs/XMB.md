@@ -365,6 +365,18 @@ positives: a naive scan reports ~100 reads of `0x08854000`, which is inside the 
 record 3's name and therefore cannot be real - the register tracking just needs to be better than
 this to be worth anything.
 
+**Nothing ever reads that table.** A memory read breakpoint over all 70 records
+(`memory.breakpoint.add` with `read`, `log`, and `enabled: false` so the run continues) does not
+trip once - not while booting, not while moving between categories, not on confirm - over 1396
+frames. The apparatus was validated in the same run rather than trusted: a second breakpoint on the
+alarm count array at `0x088595C0`, which is known to be read at startup, fired four times and named
+`PC=0883f0ac`, which is exactly the `lw` that reads it. So the negative is real, and the whole
+subsystem that would consult the item-to-plugin map is dormant rather than merely failing partway.
+
+Worth knowing if you repeat this: a hit is logged to `Log::MemMap` at NOTICE level in the form
+`CHK Read32(interpret) at <addr> (...), PC=<pc> (...)`, so grep for `CHK `. Searching for
+"memcheck" or "breakpoint" finds nothing and looks like a clean negative when it isn't.
+
 So the gate is above that routine, in whatever decides to create a plugin object at all. Getting
 there is harder than it sounds: PPSSPP's debugger has no backtrace, and picking saved return
 addresses out of the stack by eye gives plausible but wrong answers (one such address turned out to
