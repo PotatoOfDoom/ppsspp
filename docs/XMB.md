@@ -367,8 +367,11 @@ this to be worth anything.
 
 **Nothing ever reads that table.** A memory read breakpoint over all 70 records
 (`memory.breakpoint.add` with `read`, `log`, and `enabled: false` so the run continues) does not
-trip once - not while booting, not while moving between categories, not on confirm - over 1396
-frames. The apparatus was validated in the same run rather than trusted: a second breakpoint on the
+trip once - not while booting, not while moving between categories, and not on confirm. The obvious
+objection is that the table might only be consulted when an item is actually chosen, so that case
+was checked with the framebuffer captured at each step to prove the input landed: the bar visibly
+moves from Game to Network, "Internet Browser" is selected - an entry this very table maps to
+`htmlviewer_plugin` - and confirm is pressed. The read count does not move. The apparatus was validated in the same run rather than trusted: a second breakpoint on the
 alarm count array at `0x088595C0`, which is known to be read at startup, fired four times and named
 `PC=0883f0ac`, which is exactly the `lw` that reads it. So the negative is real, and the whole
 subsystem that would consult the item-to-plugin map is dormant rather than merely failing partway.
