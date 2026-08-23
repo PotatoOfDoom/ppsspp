@@ -335,6 +335,36 @@ and store it in a slot. The bridge call itself is indirect, through a function p
 dispatch table at `0x089ED428`, so this is a method on a plugin object rather than anything specific
 to those two modules — `game_plugin.prx` would take exactly the same route.
 
+**The table that says which plugin belongs to which item is in `vshmain`.** It sits at
+`0x08853f84` on a 6.61 dump, 70 records of 0x28 bytes each, and the layout is unambiguous: a
+32-byte zero-padded module name, then a `u32` column and a `u32` item id.
+
+```
+0885418c  67 61 6d 65 5f 70 6c 75 67 69 6e 00 ...   game_plugin
+      +20  05 00 00 00  1c 00 00 00                 column 5, id 0x1c
+```
+
+Grouped by column it is recognisably the XMB:
+
+| column | plugins |
+| --- | --- |
+| 0 | `sysconf_plugin`, `netconf_plugin`, `update_plugin`, `bluetooth_plugin` |
+| 1 | `game_plugin` (4x), `oneseg_launcher_plugin` |
+| 2 | `launcher_plugin`, `camera_plugin` |
+| 3 | `launcher_plugin`, `video_plugin`, `game_plugin` (2x) |
+| 4 | `video_plugin`, `msvideo_plugin` |
+| 5 | `savedata_plugin`, `netplay_client_plugin`, `game_plugin` |
+| 6 | `htmlviewer_plugin`, `lftv_plugin`, `psn_plugin`, `skype_plugin`, `radioshack_plugin`, ... |
+| 7 | `psn_plugin` |
+
+So the data that would drive loading `game_plugin.prx` is right there and complete. What is still
+missing is the code that walks it. It is not addressed by a `lui`/`addiu` pair anywhere in `.text`,
+and there is no `R_MIPS_32` pointer to it anywhere in the module image, so it is reached some other
+way. Scanning for indexed access (`lui` + a load whose offset supplies the low half) drowns in false
+positives: a naive scan reports ~100 reads of `0x08854000`, which is inside the zero padding of
+record 3's name and therefore cannot be real - the register tracking just needs to be better than
+this to be worth anything.
+
 So the gate is above that routine, in whatever decides to create a plugin object at all. Getting
 there is harder than it sounds: PPSSPP's debugger has no backtrace, and picking saved return
 addresses out of the stack by eye gives plausible but wrong answers (one such address turned out to
