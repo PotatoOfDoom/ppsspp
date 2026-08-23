@@ -454,6 +454,124 @@ bool Load_PSP_ELF_PBP(FileLoader *fileLoader, std::string_view discId, bool load
 	return __KernelLoadExec(finalName.c_str(), 0, error_string);
 }
 
+// Mounts the flash volumes the PSP's own system software - the VSH, better known as the XMB - needs.
+//
+// Unlike a game, the VSH lives in the PSP's flash and loads all its sibling modules and resources
+// through absolute flash0: paths, so the user's firmware dump has to be reachable as flash0:.
+// Called from __IoInit rather than from the loader below, because loadexec re-initializes the
+// kernel (and with it the mount table) after the loader has run. See docs/XMB.md.
+void MountVSHFlash() {
+	// fileToStart points at <dump>/vsh/module/vshmain.prx, so the dump root is three levels up.
+	const Path flash0Root = PSP_CoreParameter().fileToStart.NavigateUp().NavigateUp().NavigateUp();
+
+	// Replace the default flash0: mount (which on most platforms is the read-only asset filesystem
+	// containing only the bundled fonts) with the dump, so the VSH can enumerate and load from it.
+	pspFileSystem.Mount("flash0:", std::make_shared<DirectoryFileSystem>(&pspFileSystem, flash0Root, FileSystemFlags::FLASH));
+	INFO_LOG(Log::Loader, "VSH: mounted '%s' as flash0:", flash0Root.c_str());
+
+	// flash1: holds the registry and the settings the VSH writes back; flash2: and flash3: hold
+	// activation data and are normally empty. The real VSH expects all of these to exist.
+	//
+	// An update extracted by Tools/extract_flash0.py puts flash1 next to flash0, so prefer a
+	// sibling of the dump when there is one - otherwise use a writable directory of our own. Note
+	// these are only mounted when booting the VSH, so games see the mount list they always have.
+	for (const char *dev : { "flash1", "flash2", "flash3" }) {
+		Path dir = flash0Root.NavigateUp() / dev;
+		if (!File::IsDirectory(dir)) {
+			dir = GetSysDirectory(DIRECTORY_SYSTEM) / "flash" / dev;
+			if (!File::Exists(dir) && !File::CreateFullPath(dir)) {
+				ERROR_LOG(Log::Loader, "VSH: failed to create '%s' for %s:", dir.c_str(), dev);
+				continue;
+			}
+		}
+		INFO_LOG(Log::Loader, "VSH: mounted '%s' as %s:", dir.c_str(), dev);
+		pspFileSystem.Mount(std::string(dev) + ":", std::make_shared<DirectoryFileSystem>(&pspFileSystem, dir, FileSystemFlags::FLASH));
+	}
+}
+
+// Boots the VSH. The mounts happen later, from __IoInit - see MountVSHFlash.
+bool Load_PSP_VSH(std::string *error_string) {
+	// We boot through flash0:, not through the host path, so the dump has to be laid out like the
+	// real flash volume - otherwise MountVSHFlash derives the wrong root. Check that here rather
+	// than letting it surface as a confusing "could not find executable". Same path MountVSHFlash
+	// uses, so the two can't disagree.
+	const Path modulePath = PSP_CoreParameter().fileToStart;
+	if (!equalsNoCase(modulePath.NavigateUp().GetFilename(), "module") ||
+		!equalsNoCase(modulePath.NavigateUp().NavigateUp().GetFilename(), "vsh")) {
+		*error_string = StringFromFormat("'%s' must sit in a flash0 dump as vsh/module/vshmain.prx - see docs/XMB.md",
+			modulePath.ToVisualString().c_str());
+		return false;
+	}
+
+	pspFileSystem.SetStartingDirectory("flash0:/vsh/module");
+
+	return __KernelLoadExec("flash0:/vsh/module/vshmain.prx", 0, error_string);
+}
+
+// The shared libraries vshmain.prx links against. On a real PSP these are already resident when
+// vshmain starts; PPSSPP has no HLE for them (they're ordinary user-space PRX in the firmware dump,
+// not kernel modules), so we load the real ones out of flash0. The deferred-linking path in
+// sceKernelModule.cpp patches vshmain's still-missing import stubs as each of these registers its
+// exports, which is what keeps vshmain from calling through a stub that just returns
+// SCE_KERNEL_ERROR_LIBRARY_NOT_YET_LINKED.
+//
+// Only the shared libraries belong here - the *_plugin.prx modules (game_plugin, video_plugin, ...)
+// are loaded on demand by the VSH itself and preloading them would be wrong.
+static const char * const g_vshSharedModules[] = {
+	"flash0:/vsh/module/paf.prx",          // scePaf* - the UI framework, by far the biggest of them
+	"flash0:/vsh/module/common_gui.prx",   // sceVshCommonGui
+	"flash0:/vsh/module/common_util.prx",  // sceVshCommonUtil
+};
+
+bool LoadVSHSharedModules(PSPModule *vshModule, SceUID waitingThread) {
+	// Load them all before starting any of them, so cross-references between them are resolved at
+	// load time instead of depending on which module_start thread happens to run first.
+	std::vector<SceUID> loaded;
+	for (const char *path : g_vshSharedModules) {
+		if (!pspFileSystem.GetFileInfo(path).exists) {
+			WARN_LOG(Log::Loader, "VSH: shared module '%s' is not in the dump, skipping", path);
+			continue;
+		}
+		std::string error;
+		SceUID moduleID = KernelLoadModule(path, &error);
+		if (moduleID < 0) {
+			ERROR_LOG(Log::Loader, "VSH: failed to load shared module '%s': %08x %s", path, moduleID, error.c_str());
+			continue;
+		}
+		INFO_LOG(Log::Loader, "VSH: loaded shared module '%s' (%d)", path, moduleID);
+		loaded.push_back(moduleID);
+	}
+
+	// Anything vshmain imports that we still couldn't provide will bite much later and much less
+	// obviously, so say so now while the cause is still visible.
+	KernelLogUnresolvedImports("VSH");
+
+	bool anyStarted = false;
+	for (SceUID moduleID : loaded) {
+		bool needsWait = false;
+		int ret = __KernelStartModule(moduleID, 0, 0, 0, nullptr, &needsWait);
+		if (ret < 0) {
+			ERROR_LOG(Log::Loader, "VSH: failed to start shared module %d: %08x", moduleID, ret);
+			continue;
+		}
+		if (!needsWait) {
+			// No module_start to run, so it's already usable - nothing to wait for.
+			continue;
+		}
+		u32 error;
+		PSPModule *module = kernelObjects.Get<PSPModule>(moduleID, error);
+		if (!module) {
+			continue;
+		}
+		// Reuse the same mechanism plugins use: the loadexec thread blocks until every module we
+		// started here has returned from its module_start. See __KernelReturnFromModuleFunc.
+		module->pluginWaitingThread = waitingThread;
+		vshModule->startingPlugins.push_back(moduleID);
+		anyStarted = true;
+	}
+	return anyStarted;
+}
+
 bool Load_PSP_GE_Dump(FileLoader *fileLoader, std::string *error_string) {
 	auto umd = std::make_shared<BlobFileSystem>(&pspFileSystem, fileLoader, "data.ppdmp");
 	pspFileSystem.Mount("disc0:", umd);

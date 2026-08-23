@@ -449,7 +449,7 @@ static int sceCtrlGetSamplingCycle(u32 cyclePtr)
 	return hleLogDebug(Log::sceCtrl, 0);
 }
 
-static u32 sceCtrlSetSamplingMode(u32 mode)
+u32 sceCtrlSetSamplingMode(u32 mode)
 {
 	u32 retVal = 0;
 	if (mode > 1)
@@ -460,7 +460,7 @@ static u32 sceCtrlSetSamplingMode(u32 mode)
 	return hleLogDebug(Log::sceCtrl, retVal);
 }
 
-static int sceCtrlGetSamplingMode(u32 modePtr)
+int sceCtrlGetSamplingMode(u32 modePtr)
 {
 	u32 retVal = analogEnabled == true ? CTRL_MODE_ANALOG : CTRL_MODE_DIGITAL;
 
@@ -495,7 +495,7 @@ static int sceCtrlGetIdleCancelThreshold(u32 idleResetPtr, u32 idleBackPtr)
 	return hleLogDebug(Log::sceCtrl, 0);
 }
 
-static int sceCtrlReadBufferPositive(u32 ctrlDataPtr, u32 nBufs)
+int sceCtrlReadBufferPositive(u32 ctrlDataPtr, u32 nBufs)
 {
 	int done = __CtrlReadBuffer(ctrlDataPtr, nBufs, false, false);
 	hleEatCycles(330);

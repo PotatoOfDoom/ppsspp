@@ -907,16 +907,7 @@ const HLEFunction *GetSyscallFuncPointer(MIPSOpcode op) {
 	int modulenum = (callno & 0xFF000) >> 12;
 	if (funcnum == 0xfff) {
 		std::string_view modName = modulenum >= (int)moduleDB.size() ? "(unknown)" : moduleDB[modulenum].name;
-		// This is what a still-unresolved import looks like once written as a syscall opcode -
-		// the original module name/NID aren't recoverable from the opcode itself (see
-		// WriteFuncMissingStub), but the calling address is a stub we may still be tracking.
-		std::string importModuleName, importingModuleName;
-		u32 nid = 0;
-		if (currentMIPS->pc >= 8 && KernelFindImportByStubAddr(currentMIPS->pc - 8, &importModuleName, &nid, &importingModuleName)) {
-			ERROR_LOG(Log::HLE, "Unknown syscall: unresolved import %s/%08x (%s), called from '%s'", importModuleName.c_str(), nid, GetHLEFuncName(importModuleName, nid), importingModuleName.c_str());
-		} else {
-			ERROR_LOG(Log::HLE, "Unknown syscall: Module: '%.*s' (module: %d func: %d)", (int)modName.size(), modName.data(), modulenum, funcnum);
-		}
+		ERROR_LOG(Log::HLE, "Unknown syscall: Module: '%.*s' (module: %d func: %d)", (int)modName.size(), modName.data(), modulenum, funcnum);
 		return NULL;
 	}
 	if (modulenum >= (int)moduleDB.size()) {
@@ -952,6 +943,31 @@ void hleSetFlipTime(double t) {
 	hleFlipTime = t;
 }
 
+// Adds detail to the "Unknown syscall" log above. A call through an import that never got resolved
+// lands on the generic "invalid syscall" opcode WriteFuncMissingStub wrote, which no longer carries
+// the module name or the NID - but the stub it sits in still knows both. We can find that stub
+// exactly rather than guessing from pc: the stub is "jr ra; syscall", so ra points just past the
+// jal that jumped to it, and that jal's target is the stub. Only call this from the actual call, not
+// from the JITs' compile-time lookup, where pc and ra mean nothing.
+static void LogUnresolvedImportCall() {
+	const u32 ra = currentMIPS->r[MIPS_REG_RA];
+	if (ra < 8 || !Memory::IsValid4AlignedAddress(ra - 8)) {
+		return;
+	}
+	const MIPSOpcode callOp = Memory::Read_Instruction(ra - 8);
+	if ((callOp >> 26) != 3) {  // jal
+		return;
+	}
+	const u32 stubAddr = ((ra - 8) & 0xF0000000) | ((callOp & 0x03FFFFFF) << 2);
+
+	std::string importModuleName, importingModuleName;
+	u32 nid = 0;
+	if (KernelFindImportByStubAddr(stubAddr, &importModuleName, &nid, &importingModuleName)) {
+		ERROR_LOG(Log::HLE, "Unresolved import %s/%08x (%s) called from '%s' - returning LIBRARY_NOT_YET_LINKED",
+			importModuleName.c_str(), nid, GetHLEFuncName(importModuleName, nid), importingModuleName.c_str());
+	}
+}
+
 void CallSyscall(MIPSOpcode op) {
 	PROFILE_THIS_SCOPE("syscall");
 	double start = 0.0;  // need to initialize to fix the race condition where coreCollectDebugStats is enabled in the middle of this func.
@@ -961,6 +977,7 @@ void CallSyscall(MIPSOpcode op) {
 
 	const HLEFunction *info = GetSyscallFuncPointer(op);
 	if (!info) {
+		LogUnresolvedImportCall();
 		// We haven't incremented the stack yet.
 		RETURN(SCE_KERNEL_ERROR_LIBRARY_NOT_YET_LINKED);
 		return;

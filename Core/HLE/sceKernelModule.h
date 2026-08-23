@@ -233,9 +233,13 @@ void __KernelModuleShutdown();
 
 u32 __KernelGetModuleGP(SceUID module);
 bool KernelModuleIsKernelMode(SceUID module);
+// True for kernel-mode *and* VSH-mode modules, i.e. anything that isn't plain user mode.
+bool KernelModuleIsPrivileged(SceUID module);
 bool __KernelLoadGEDump(std::string_view base_filename, std::string *error_string);
 bool __KernelLoadExec(const char *filename, u32 paramPtr, std::string *error_string);
 bool KernelFindImportByStubAddr(u32 stubAddr, std::string *importModuleName, u32 *nid, std::string *importingModuleName);
+// Warns about import libraries that neither a loaded module nor HLE provides. context is a prefix for the log lines.
+void KernelLogUnresolvedImports(const char *context);
 // Describes which loaded module (and section within it) an address falls in, e.g. "EBOOT.BIN.text+1234".
 // Returns an empty string if the address isn't inside any currently loaded module.
 bool DescribeKernelModuleAddress(u32 address, char *buffer, size_t bufferSize);

@@ -16,6 +16,7 @@
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
 #include <algorithm>
+#include <map>
 #include <set>
 
 #include "zlib.h"
@@ -792,6 +793,102 @@ bool KernelFindImportByStubAddr(u32 stubAddr, std::string *importModuleName, u32
 	return false;
 }
 
+// True if no loaded module exports this variable. There's no trap for a variable import the way
+// there is for a function - ImportVarSymbol just skips the relocation - so we have to ask.
+static bool VarImportIsUnresolved(const VarSymbolImport &var) {
+	u32 error;
+	for (SceUID moduleId : loadedModules) {
+		PSPModule *module = kernelObjects.Get<PSPModule>(moduleId, error);
+		if (!module || !module->ImportsOrExportsModuleName(var.moduleName)) {
+			continue;
+		}
+		for (const auto &exported : module->exportedVars) {
+			if (exported.Matches(var)) {
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
+// Lists the imports nothing ended up providing - either because nothing provides the library at
+// all, or because it's a library we HLE but the NID isn't in our table. An unresolved function is
+// left as the plain "invalid syscall" trap WriteFuncMissingStub writes and returns
+// SCE_KERNEL_ERROR_LIBRARY_NOT_YET_LINKED when called; callers that don't check the return value
+// tend to use it as a pointer and crash far away from the actual cause.
+//
+// Unresolved *variables* are quieter and worse: ImportVarSymbol skips the relocation entirely, so
+// the lui/addiu pair keeps whatever immediate was baked into the PRX. There's no trap, no error
+// return, and the resulting bad pointer is identical on every run - which makes it look like
+// anything but a linking problem. Both are worth knowing up front, so report both.
+//
+// Only useful when running real firmware modules; for games everything either resolves or is HLE'd.
+void KernelLogUnresolvedImports(const char *context) {
+	struct Unresolved {
+		int funcs = 0;
+		int vars = 0;
+		u32 firstNid = 0;
+		u32 firstVarNid = 0;
+	};
+	std::map<std::string, Unresolved> unresolved;
+
+	u32 error;
+	for (SceUID moduleId : loadedModules) {
+		PSPModule *module = kernelObjects.Get<PSPModule>(moduleId, error);
+		if (!module) {
+			continue;
+		}
+		for (const auto &func : module->importedFuncs) {
+			if (!Memory::IsValid4AlignedAddress(func.stubAddr + 4)) {
+				continue;
+			}
+			// The "no module index, no function index" syscall. WriteFuncMissingStub always writes
+			// GetSyscallOp("", nid), so this is the same opcode whether the library is one we HLE
+			// or one we've never heard of - the distinction is made below, from the name.
+			if (Memory::Read_Instruction(func.stubAddr + 4) != 0x03FFFFCC) {
+				continue;
+			}
+			Unresolved &entry = unresolved[func.moduleName];
+			if (entry.funcs++ == 0) {
+				entry.firstNid = func.nid;
+			}
+		}
+		for (const auto &var : module->importedVars) {
+			if (!VarImportIsUnresolved(var)) {
+				continue;
+			}
+			Unresolved &entry = unresolved[var.moduleName];
+			if (entry.vars++ == 0) {
+				entry.firstVarNid = var.nid;
+			}
+		}
+	}
+
+	if (unresolved.empty()) {
+		INFO_LOG(Log::Loader, "%s: all imports resolved", context);
+		return;
+	}
+	for (const auto &[library, entry] : unresolved) {
+		if (entry.vars != 0) {
+			WARN_LOG(Log::Loader, "%s: library '%s' has %d unresolved VARIABLE import(s), e.g. %08x - "
+				"those relocations were skipped, so the module holds whatever address was baked into it",
+				context, library.c_str(), entry.vars, entry.firstVarNid);
+		}
+		if (entry.funcs == 0) {
+			continue;
+		}
+		// Separate the two cases - "we've never heard of this library" is a very different piece of
+		// work from "we have it, these particular NIDs just aren't in the table yet".
+		if (GetHLEModuleIndex(library) != -1) {
+			WARN_LOG(Log::Loader, "%s: HLE library '%s' is missing %d NID(s), e.g. %08x",
+				context, library.c_str(), entry.funcs, entry.firstNid);
+		} else {
+			WARN_LOG(Log::Loader, "%s: no module provides library '%s' (%d unresolved function(s), e.g. %08x)",
+				context, library.c_str(), entry.funcs, entry.firstNid);
+		}
+	}
+}
+
 void PSPModule::Cleanup() {
 	MIPSAnalyst::ForgetFunctions(textStart, textEnd);
 
@@ -979,6 +1076,24 @@ static int gzipDecompress(u8 *OutBuffer, int OutBufferLength, u8 *InBuffer) {
 	return stream.total_out;
 }
 
+// A ~PSP module that has the compressed bit set isn't necessarily gzip - Sony's kernel also supports
+// a few in-house LZ variants, which are what the flash0 kd/ and vsh/ modules generally use.
+// Returns nullptr if the payload doesn't start with a compression format we recognize.
+static const char *DetectPrxCompression(const u8 *data, size_t size) {
+	if (size < 4) {
+		return nullptr;
+	}
+	if (data[0] == 0x1F && data[1] == 0x8B) {
+		return "gzip";
+	}
+	for (const char *magic : { "KL4E", "KL3E", "2RLZ", "1RLZ" }) {
+		if (!memcmp(data, magic, 4)) {
+			return magic;
+		}
+	}
+	return nullptr;
+}
+
 static void parsePrxLibInfo(const u8* ptr, u32 headerSize) {
 	// 0x0 - ~SCE
 	// 0x4 - the header's size
@@ -1043,11 +1158,7 @@ inline u32 Read32(const u8 *ptr) {
 	return value;
 }
 
-enum : u32 {
-	SCE_MAGIC = 0x4543537e,
-	PSP_MAGIC = 0x5053507e,
-	ELF_MAGIC = 0x464c457f,
-};
+// SCE_MAGIC / PSP_MAGIC / ELF_MAGIC live in Core/ELF/PSPElfTypes.h, since Identify_File needs them too.
 
 // filename is only used for dumping/metadata.
 static PSPModule *__KernelLoadELFFromPtr(const u8 *ptr, size_t elfSize, u32 loadAddress, bool fromTop, std::string *error_string, u32 *magic, std::string_view filename, u32 &error) {
@@ -1134,6 +1245,22 @@ static PSPModule *__KernelLoadELFFromPtr(const u8 *ptr, size_t elfSize, u32 load
 		if (isGzip) {
 			_dbg_assert_(Read32(ptr + 0x150) != ELF_MAGIC);
 
+			// Bail out cleanly on anything we can't decompress, rather than falling through to
+			// parse whatever's left in the buffer (still compressed, not a valid ELF) as if it
+			// were real code. Name the format when we can - the flash0 kd/ and vsh/ modules use
+			// Sony's KL4E and friends, which we don't implement. See docs/XMB.md.
+			const char *compression = DetectPrxCompression((const u8 *)ptr, decryptedSize);
+			if (compression && strcmp(compression, "gzip") != 0) {
+				*error_string = StringFromFormat("Module '%s' uses %s compression, which PPSSPP can't decompress", head->modname, compression);
+				ERROR_LOG(Log::sceModule, "%s", error_string->c_str());
+				delete[] newptr;
+				module->Cleanup();
+				kernelObjects.Destroy<PSPModule>(module->GetUID());
+				// TODO: Might be the wrong error code.
+				error = SCE_KERNEL_ERROR_FILEERR;
+				return nullptr;
+			}
+
 			// Can't decompress in place so we need a temporary buffer.
 			u8 *temp = (u8 *)malloc(decryptedSize);
 			_assert_msg_(temp != nullptr, "Failed to allocate gzip decompression buffer (decryptedSize: %d)", decryptedSize);
@@ -1141,11 +1268,10 @@ static PSPModule *__KernelLoadELFFromPtr(const u8 *ptr, size_t elfSize, u32 load
 			int outBytes = gzipDecompress((u8 *)ptr, maxElfSize, temp);
 			free(temp);
 			if (outBytes < 0) {
-				// Not necessarily actually gzip - some kd/ system modules (and possibly VSH
-				// modules) use KL4E compression instead, which we don't support decompressing.
-				// Bail out cleanly here rather than falling through to parse whatever's left
-				// in the buffer (still compressed, not a valid ELF) as if it were real code.
 				*error_string = StringFromFormat("Module '%s' decompression failed", head->modname);
+				delete[] newptr;
+				module->Cleanup();
+				kernelObjects.Destroy<PSPModule>(module->GetUID());
 				// TODO: Might be the wrong error code.
 				error = SCE_KERNEL_ERROR_FILEERR;
 				return nullptr;
@@ -1310,7 +1436,8 @@ static PSPModule *__KernelLoadELFFromPtr(const u8 *ptr, size_t elfSize, u32 load
 	module->nm.attribute = modinfo->moduleAttrs;
 	if ((module->nm.attribute & PSP_MODULE_VSH_MODE) != 0) {
 		// Used by the PSP's Visual Shell (VSH/XMB) and modules it loads, such as vshmain.prx.
-		// We don't do anything special with this yet, just recognizing it for now.
+		// Beyond counting as privileged (see KernelModuleIsPrivileged) we don't treat these
+		// specially yet - notably they still get loaded into the user partition. See docs/XMB.md.
 		INFO_LOG(Log::sceModule, "VSH mode module detected: %s", modinfo->name);
 	}
 	module->nm.version[0] = modinfo->moduleVersion & 0xFF;
@@ -1748,6 +1875,18 @@ bool KernelModuleIsKernelMode(SceUID uid) {
 	}
 }
 
+bool KernelModuleIsPrivileged(SceUID uid) {
+	u32 error;
+	PSPModule *module = kernelObjects.Get<PSPModule>(uid, error);
+	if (module) {
+		// VSH-mode modules (the XMB and the modules it loads) are privileged on real hardware too,
+		// so they get to use the non-user thread attributes just like kernel modules do.
+		return (module->nm.attribute & (PSP_MODULE_VSH_MODE | PSP_MODULE_KERNEL_MODE)) != 0;
+	} else {
+		return false;
+	}
+}
+
 void __KernelLoadReset() {
 	// Wipe kernel here, loadexec should reset the entire system
 	if (__KernelIsRunning()) {
@@ -1860,7 +1999,15 @@ bool __KernelLoadExec(const char *filename, u32 paramPtr, std::string *error_str
 
 	// Wait until plugins are loaded
 	module->startingPlugins.clear();
-	if (HLEPlugins::Load(module, __KernelGetCurThread())) {
+
+	// The VSH needs its shared flash0 libraries started the same way, and waited for the same way.
+	// Careful not to short-circuit the plugin load below - both need to run.
+	bool waitForVSHModules = false;
+	if (PSP_CoreParameter().fileType == IdentifiedFileType::PSP_VSH) {
+		waitForVSHModules = LoadVSHSharedModules(module, __KernelGetCurThread());
+	}
+
+	if (HLEPlugins::Load(module, __KernelGetCurThread()) || waitForVSHModules) {
 		__KernelWaitCurThread(WAITTYPE_PLUGIN, module->GetUID(), 1, 0, false, "started plugins");
 		__KernelReSchedule("Started plugins");
 	}
@@ -2107,7 +2254,10 @@ int __KernelStartModule(SceUID moduleId, u32 argsize, u32 argAddr, u32 returnVal
 
 		// TODO: Why do we skip smoption->attribute here?
 
-		SceUID threadID = __KernelCreateThread(module->nm.name, moduleId, entryAddr, priority, stacksize, attribute, 0, (module->nm.attribute & 0x1000) != 0);
+		// A module without a module_start ends up passing its *module* attribute as the thread
+		// attribute here, and PSP_MODULE_VSH_MODE (0x0800) isn't a legal user thread attribute -
+		// so VSH-mode modules need the same allowance kernel-mode ones get.
+		SceUID threadID = __KernelCreateThread(module->nm.name, moduleId, entryAddr, priority, stacksize, attribute, 0, KernelModuleIsPrivileged(moduleId));
 		_dbg_assert_(threadID > 0);
 		// TOOD: Check the return value and bail?
 		__KernelStartThreadValidate(threadID, argsize, argAddr);

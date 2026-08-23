@@ -1,0 +1,582 @@
+# Running the XMB (the PSP's VSH)
+
+The XMB (XrossMediaBar) is the PSP's system software. Its main module is
+`flash0:/vsh/module/vshmain.prx`, and internally it's usually called the VSH ("Visual Shell").
+PPSSPP has the beginnings of a boot path for it. Against a real 6.61 dump it starts `vshmain`,
+`paf`, `common_gui` and `common_util`, brings up the `SCE_VSH_GRAPHICS` thread, reads its settings
+out of the registry, loads the system fonts, opens the XMB's own resource files
+(`opening_plugin.rco`, `system_plugin.rco` and its `_bg`/`_fg` companions), loads and starts
+`opening_plugin.prx`, `impose_plugin.prx` and `mpeg_vsh.prx`, and **draws**: it sets the display
+mode, renders through the GE and flips between two framebuffers in VRAM for as long as it is left
+running. What comes out is a real frame from the real firmware, not something PPSSPP draws — the
+wave background with the clock and the battery indicator, and then the VSH's own dialogs, laid out
+with the fonts and `.rco` resources out of the dump.
+
+Once the opening animation ends it draws **the XrossMediaBar itself** — the category row (Video,
+Game, Network, PlayStation Network), the item under the selected category, the clock and the battery
+— out of the dump's own resources and fonts.
+
+That is as far as this has been taken. The frame is real, but nothing beyond drawing it has been
+tried: input has not been wired up or tested, nothing has been started from the menu, and the
+categories that need a memory stick or a network are certain to want things PPSSPP does not answer
+yet. See [What's still missing](#whats-still-missing).
+
+To see the frame without a display, pause the emulator over the WebSocket debugger and read the
+framebuffer straight out of VRAM — it is at `0x04000000`/`0x04088000`, 480x272, stride 512, pixel
+format 3 (8888), the addresses the VSH passes to `sceDisplaySetFrameBuf`. `gpu.buffer.screenshot`
+answers `Could not download output` on a headless build, with either the software or the Vulkan
+backend.
+
+Nothing in this repo contains PSP firmware, and PPSSPP neither ships nor downloads it. Running the
+VSH requires files you supply yourself, from a PSP you own or from an official Sony update file.
+
+## How to try it
+
+1. Get a `flash0` tree, either by dumping it from a PSP or by extracting `DATA.PSAR` from an official
+   Sony update `EBOOT.PBP`, which carries the complete flash0 contents. PPSSPP neither ships nor
+   fetches firmware.
+
+   `Tools/extract_flash0.py` does the update-file route and validates the result:
+
+   ```
+   python3 Tools/extract_flash0.py EBOOT.PBP -o <flash0 directory>
+   python3 Tools/extract_flash0.py --check <flash0 directory>   # validate a tree you already have
+   ```
+
+   It delegates the actual extraction to [pspdecrypt](https://github.com/John-K/pspdecrypt), which
+   has the PSAR keys and the KL4E decompressor; what it adds is knowing which files PPSSPP needs,
+   where they go, and whether they came out in a state it can load.
+
+   **Decrypt and decompress the modules on the PC side** (which is what the script does by default).
+   PPSSPP takes a plain ELF/PRX straight to `ElfReader` and never enters the `~PSP`
+   decrypt/decompress path at all (`__KernelLoadELFFromPtr` gates that whole block on the `~PSP`
+   magic), so a pre-decrypted tree sidesteps the KL4E problem below entirely.
+
+   Note that per-console data — IdStorage, the PSID, the MAC address — is in neither a PSAR nor a
+   plain flash0 dump. PPSSPP has to fake those regardless.
+
+2. The directory layout PPSSPP expects is the flash volume's own layout:
+
+   ```
+   <flash0 directory>/
+     vsh/module/vshmain.prx     <- the boot module
+     vsh/module/*.prx           <- paf.prx, common_gui.prx, sysconf_plugin.prx, ...
+     vsh/resource/*.rco         <- the XMB's own graphics and layout resources
+     kd/*.prx                   <- kernel modules
+     font/*.pgf
+     data/cert/
+   ```
+
+3. Boot it by opening the `vshmain.prx` from your tree like any other file:
+
+   ```
+   PPSSPPSDL       <tree>/vsh/module/vshmain.prx
+   PPSSPPHeadless  <tree>/vsh/module/vshmain.prx -l --log=vsh.log
+   ```
+
+   Files named `vshmain.prx` are identified as `IdentifiedFileType::PSP_VSH` and get the VSH boot
+   path rather than the homebrew ELF path. **A tree can live anywhere** — the directory three levels
+   above `vshmain.prx` is mounted as `flash0:`, and a `flash1` next to it as `flash1:`.
+
+   The `--vsh` flag exists too, but it is only useful if your dump happens to be in the built-in
+   `flash0` directory. That is `assets/flash0` next to the executable on desktop (where the bundled
+   fonts live) and platform-specific elsewhere; `g_Config.flash0Directory` is set at startup per
+   platform and is **not** a persisted config setting, so it can't be pointed somewhere else without
+   a code change.
+
+Use `--log=` and read the log — that's where all the interesting information is right now.
+
+## What the VSH boot path does differently
+
+Implemented in `Load_PSP_VSH` and `MountVSHFlash` (`Core/PSPLoaders.cpp`), instead of
+`Load_PSP_ELF_PBP`. Note that the mounting happens from `__IoInit`, not from the loader — loadexec
+re-initializes the kernel, and with it the mount table, after the loader has run.
+
+- **Mounts the dump as `flash0:`.** The default `flash0:` is the read-only asset filesystem with
+  just the fonts in it (and on non-Windows/Apple builds it can't even list directories), so it's
+  replaced with a real `DirectoryFileSystem` over the dump. This matters because the VSH loads all
+  its siblings by absolute `flash0:` path, not relative to itself.
+- **Mounts `flash1:`, `flash2:` and `flash3:`.** `flash1:` is where the real VSH keeps the registry
+  and the settings it writes back. Each is taken from a sibling of the flash0 root if one exists —
+  which is where `Tools/extract_flash0.py` puts the `flash1` it extracts — otherwise from a writable
+  directory under `<system>/flash/`, created on demand. These mounts are only added when booting the
+  VSH, so games see exactly the mount list they always have.
+- **Sets the working directory** to `flash0:/vsh/module`.
+- **Pins a stable disc ID** (`PSPVSH000`) and title, since there's no `PARAM.SFO`. Without this a
+  fake ID gets generated from the filename, which would make savestates and per-game config drift.
+- **Loads the shared libraries `vshmain` links against** — `paf.prx`, `common_gui.prx` and
+  `common_util.prx` — out of `flash0:/vsh/module/`. Unlike a game's `EBOOT.BIN`, `vshmain` is not
+  self-contained: on a real PSP those are already resident when it starts. `LoadVSHSharedModules`
+  loads all of them first (so cross-references between them resolve at load time rather than
+  depending on which `module_start` thread runs first), then starts them and makes the loadexec
+  thread wait for them, reusing the same mechanism plugins use. The deferred-linking path in
+  `sceKernelModule.cpp` patches `vshmain`'s still-missing import stubs as each one registers its
+  exports. Only the shared libraries are preloaded — the `*_plugin.prx` modules are loaded on demand
+  by the VSH itself.
+
+Also relevant, outside that function:
+
+- `Identify_File` (`Core/Loaders.cpp`) now accepts `~PSP` and `~SCE` magic, not just plain ELF.
+  Real flash0 modules are encrypted and/or signed, and were previously rejected as unknown files
+  before the module loader — which knows how to decrypt them — ever saw them.
+- VSH-mode modules (module attribute `0x0800`, `PSP_MODULE_VSH_MODE`) count as privileged for
+  thread creation, so they may use the non-user thread attributes. See
+  `KernelModuleIsPrivileged` in `Core/HLE/sceKernelModule.cpp`. This matters in two places:
+  `sceKernelCreateThread`, and `__KernelStartModule`, which passes a module's *module* attribute
+  as the thread attribute when the module has no `module_start` — and `0x0800` is not a legal
+  user thread attribute.
+- After the shared modules are loaded, `KernelLogUnresolvedImports` lists every import nothing
+  provides, so a missing module shows up as one clear line at boot instead of as a crash somewhere
+  in the middle of `vshmain`. It reports functions and *variables* separately — see below for why
+  the variables matter more than they look.
+
+## What's still missing
+
+Roughly in the order you hit them.
+
+### 1. KL4E decompression — only if you feed PPSSPP raw modules
+
+Most `kd/` and `vsh/` modules as stored in flash are compressed with one of Sony's in-house LZ
+variants — `KL4E`, or the older `KL3E`/`2RLZ`/`1RLZ` — rather than gzip. PPSSPP only implements gzip,
+so loading such a module as-is fails with:
+
+```
+Module 'vshmain' uses KL4E compression, which PPSSPP can't decompress
+```
+
+`DetectPrxCompression` in `Core/HLE/sceKernelModule.cpp` names the format so this is obvious in the
+log rather than showing up as a generic failure.
+
+**This is avoidable, not a hard blocker** — decrypt and decompress the tree on the PC side and
+PPSSPP loads the resulting plain ELFs directly, as described under "How to try it".
+`Tools/extract_flash0.py --check` tells you whether any module in a tree is still compressed.
+Implementing the decompressor is only needed to load an untouched flash0 dump.
+
+If someone does implement it: KL4E was reverse engineered from firmware 6.60 (originally
+`UtilsForKernel_6C6887EE` in `sysmem.prx`), and the well-known implementations —
+[pspdecrypt](https://github.com/John-K/pspdecrypt)'s `kl4e.c` and
+[JPCSP](https://github.com/jpcsp/jpcsp)'s port of it — are **GPLv3**, which can't be copied into
+PPSSPP (GPLv2-or-later). It has to be written from the algorithm rather than copied. There is
+already an LZRC range decoder in `Core/FileSystems/tlzrc.cpp` that shares machinery with it.
+
+### 2. The kernel/driver HLE surface — the actual frontier
+
+PPSSPP's HLE surface is essentially the user-mode API that games use. Three of the VSH's kernel
+libraries now exist:
+
+| Library | File | State |
+| --- | --- | --- |
+| `sceVshBridge` | `Core/HLE/sceVshBridge.cpp` | 87 of 189 exports named, plus the 43 name-less ones a real 6.61 `vshmain`/`paf` import, as `sceVshBridge_<NID>`; the ones that map onto something PPSSPP has are wired through |
+| `sceChkreg_driver` | `Core/HLE/sceChkreg.cpp` | complete — PS code, region check, PSP model, PS flags |
+| `sceIdStorage_driver` | `Core/HLE/sceIdStorage.cpp` | complete API, but no leaf contents (see below) |
+| `sceResmgr` | `Core/HLE/sceResmgr.cpp` | the one export the XMB imports, which is all it has ever asked for (see below) |
+
+Still missing entirely: `sceSysreg_driver`, `sceSyscon_driver`, `sceNand_driver`, `sceMScm_driver`,
+`sceCertLoader`, `sceMesgLed`, `sceClockgen_driver`, `sceUmdMan_driver`, `sceMeCore`,
+`sceLibUpdateDL`, and the kernel-side `sceUtility`. A boot against real 6.61 additionally wanted
+`sceBSMan`, `sceMlnBridge`, `sceUtility_netparam_internal`, `sceNpCommerce2Store` and
+`sceNpCommerce2RegCam` — one to three functions each, none of them called yet.
+`sceVshCommonGui` and `sceVshCommonUtil` are *not* on any of these lists — like `scePaf`, they come
+from real modules in the dump and don't need HLE.
+
+Existing modules can be short a NID or two as well, which looks the same from the outside but is a
+much smaller job. `KernelLogUnresolvedImports` separates the two cases at boot: "no module provides
+library X" versus "HLE library X is missing N NID(s)".
+
+Two things learned while adding those, which shape what else is possible:
+
+**Kernel NIDs are obfuscated and firmware-specific.** For kernel libraries the NID is *not*
+SHA-1(name) and it differs per firmware version, so the tables target **6.61** and will not resolve
+against an older dump. The switch is sharp and easy to measure against PSPLibDoc: counting named
+`*_driver` exports whose NID equals the first four bytes of SHA-1(name), firmware 3.60 is at
+1476/1499 (98%) and 3.70 drops to 553/1462 (37%) — everything from 3.70 on is partly scrambled, and
+6.61 sits at 663/1390 (47%). Worse, for some libraries the names were never recovered at all —
+`sceImpose_driver` has 31 exports on 6.61 and *zero* known names — so that library simply cannot be
+implemented for a modern dump. Check [PSPLibDoc](https://github.com/pspdev/psplibdoc) before
+planning work on one.
+
+**The VSH mostly doesn't call these libraries directly** — it goes through `sceVshBridge`, whose
+names *are* largely known. So `vshImposeGetParam`/`vshImposeSetParam` are implemented against
+impose-param state in `Core/HLE/sceImpose.cpp` even though `sceImpose_driver` can't be. When a
+kernel library is a dead end, check whether the bridge route is open.
+
+**ID storage has no contents.** The API answers truthfully (512-byte leaves, formatted, read-only)
+but every leaf read fails with the leaf ID in the log. The interesting leaves (0x100–0x102) hold
+ECDSA-signed certificates over a real console's ConsoleId, which cannot be fabricated — and per-
+console data is in neither a firmware dump nor a PSAR. If the XMB turns out to need a specific
+non-signed field, the UMD region codes at leaf 0x102 offset 0xB0 are the place to look.
+
+Unresolved imports are not fatal *at load time* — `ImportFuncSymbol` writes a stub that returns
+`SCE_KERNEL_ERROR_LIBRARY_NOT_YET_LINKED` — so `vshmain` loads and runs, but every call into the
+kernel fails. They tend to be fatal shortly afterwards: firmware code rarely checks these return
+values, so `0x8002013a` gets used as a pointer and the crash surfaces far from its cause. Unresolved
+*variable* imports are worse still: the relocation is skipped entirely, leaving whatever was baked
+into the `lui`/`addiu` pair.
+
+That is why a table entry that admits it does nothing beats no entry at all, and it applies to
+`nullptr` entries in existing modules too — those return the same error and never write their output
+parameters, so the caller reads whatever was on its stack.
+
+An unresolved **variable** import is quieter and worse. `ImportVarSymbol` skips the relocation
+entirely, so the `lui`/`addiu` pair keeps whatever immediate the PRX was built with: no trap, no
+error return, and a bad pointer that is *identical on every run*. That last property makes it look
+like anything but a linking problem — a deterministic garbage address is easy to mistake for
+uninitialised-but-stable stack. There is no stub to inspect the way there is for a function, so
+`KernelLogUnresolvedImports` has to ask whether any loaded module exports the variable; it does, and
+reports those separately. The only other trace is one `INFO` line per reference at load time,
+`Variable (<library>,<nid>) unresolved, storing for later resolving`.
+
+Every function the XMB imports **by name** now has an implementation. The ones that were `nullptr`
+until it asked for them: `sceRtcGetAlarmTick`, `sceRtcIsAlarmed`, `sceRtcRegisterCallback` and
+`sceRtcUnregisterCallback` (there is no alarm hardware, so they report none set),
+`scePowerIsRequest`, `scePowerCancelRequest`, `scePowerRequestSuspend` and
+`scePowerIsSuspendRequired` (suspend isn't emulated),
+`sceHttpsEnableOption` (the counterpart of the already-present `sceHttpsDisableOption`), and
+`sceNpCommerce2Init`/`Term`. Worth redoing after any change to the dump — the list came from
+cross-referencing the `Importing <name>` lines in a boot log against the `HLEFunction` tables,
+which is a few minutes of scripting and finds them all at once.
+
+**Plugins load through `vshKernelLoadModuleVSH`.** The VSH does not call `ModuleMgr` itself; it goes
+through this bridge export, which takes exactly `sceKernelLoadModule`'s arguments and is now
+forwarded to it. The argument list is not in PSPLibDoc — it was read off the call site, where
+`paf.prx` asks for `flash0:/vsh/module/opening_plugin.prx` with flags 0 and an `SceKernelLMOption`
+that sets only position and access, no partition IDs. It is exported under three NIDs on 6.61
+(`0x24BC5B26`, `0xA5628F0D`, `0xCCD27632`); `vshKernelLoadModuleVSHByID` has two more and is still a
+stub, because nothing has called it yet. With this in place a boot loads and starts
+`opening_plugin.prx`, `impose_plugin.prx` and `flash0:/kd/mpeg_vsh.prx`.
+
+**There is no `system_plugin.prx`, and there never was.** It is easy to assume the XrossMediaBar
+comes from a plugin of its own, because the VSH opens `system_plugin.rco`, `system_plugin_bg.rco`,
+`system_plugin_fg.rco`, `topmenu_plugin.rco` and `topmenu_icon.rco` early in the boot. Those are
+resources; `vsh/module/` holds only `vshmain`, `paf`, `pafmini`, `common_gui`, `common_util` and the
+media plugins. The top menu is `vshmain`'s own code, and it has everything it needs by the time the
+opening animation starts — so a missing module is never the reason the bar is absent.
+
+The plugins then poll two things every frame — about 17,000 calls each in a minute of running — and
+they are worth understanding because they are opposite cases. `scePowerIsSuspendRequired` was a
+`nullptr` entry, so it answered `LIBRARY_NOT_YET_LINKED`: a *nonzero* value to a caller asking a
+yes/no question, i.e. "suspend now", every frame. It now reports no suspend pending, like the other
+power request functions. `vshImposeChanges` looks similar but needed the opposite treatment: the
+call site discards the return value entirely (`v0` is never read before the next call overwrites
+it), and PPSSPP applies impose params as they are set, so there is no deferred state for an "apply
+the changes" call to flush. There is nothing to implement, so it stays a no-op that says so once
+instead of every frame. Between them those two were 35,600 of the 35,650 error lines in a boot log,
+which is reason enough to deal with a hot stub even when it turns out to be harmless.
+
+Note also `sceKernelLoadModule: unsupported options` in the log — the `SceKernelLMOption` the VSH
+passes is accepted but its position/access fields are discarded, which ties into the privilege-model
+gap below.
+
+**An unknown impose param used to end the boot.** The XMB reads impose params `0x1000` and
+`0x20000000` and writes `0x80000007`, and `sceImpose.cpp` knows none of them — they are in no
+documentation either. Returning `INVALID_VALUE` to say so turned out to be fatal: the VSH takes the
+error on `0x20000000` as a reason to give up, calls `sceDisplaySetFrameBuf(0, 0, 0, 1)` and stops
+presenting, which is why a boot used to end after exactly 352 frames with the last one frozen in
+VRAM. Reporting zero for a param we don't know, and ignoring a write to one, gets thousands of
+frames instead and lets the VSH reach its own UI. Zero is a guess; erroring is a measured mistake.
+This is done in the `sceVshBridge` wrappers only, so games calling `sceImpose` directly still get
+`INVALID_VALUE` for a param that does not exist.
+
+**The drive has to be empty, and PPSSPP said it wasn't.** With the display staying on, the first
+thing the VSH used to put up was "This disc cannot be started. The region code is not correct." It
+reads `umd_autoboot` out of the registry — 1 on a real dump, which is correct, that is what a PSP
+ships with — so if it is told a disc is in the drive it tries to start it, and complains when it
+can't. There is no disc: `sceUmdActivate(1, "disc0:")` is just the VSH spinning up the drive before
+it knows what is in it.
+
+Three places claimed a disc anyway, and all three had to be fixed before the message went away
+(fixing them one at a time only changed the wording — "region code is not correct" became "the disc
+could not be read"):
+
+- `__UmdInit` never assigned `UMDInserted`, so it kept the `true` its definition gives it. It is now
+  set from the boot type, which also means a UMD change from an earlier run in the same process
+  can't leak into the next one.
+- `sceIoDevctl("umd0:", 0x01F20001, ...)`, "get disc type", wrote `PSP_UMD_TYPE_GAME`
+  unconditionally — reasonable for a game, which has a disc by definition, wrong here.
+- `__KernelUmdActivate` notified the drive callback with `PSP_UMD_PRESENT | PSP_UMD_READABLE`
+  without looking at `UMDInserted` either, and that notification is what the VSH's
+  `SceVshMediaDetectUMD` callback reads.
+
+None of this changes anything for a game, where `UMDInserted` is true throughout.
+
+**The memory stick was one devctl short, and it did not matter.** `sceIoDevctl("fatms0:",
+0x02425856, ...)` was the only command the VSH sent that PPSSPP did not answer, and it turns out to
+be "set the FAT driver's OEM code page": the VSH sends it once at startup with the four bytes it has
+just read out of `/CONFIG/SYSTEM/CHARACTER_SET/oem` (5 on this dump), and `flash0:/codepage/cptbl.dat`
+is the table it refers to. There is nothing to apply — `ms0:` is a host directory here and PPSSPP
+never deals in 8.3 short names — but the old answer was `SCE_KERNEL_ERROR_UNSUP`, and an error to a
+settings push is the kind of thing that bit us with the impose params. It is answered now, and a
+boot has no unanswered devctls left. It changed nothing visible.
+
+**The XMB never looks at the memory stick, or at anything else.** Putting homebrew in
+`memstick/PSP/GAME` does not make it appear in the Game column — and the reason is worth knowing,
+because it explains more than the memory stick. Over a whole boot the VSH calls `sceIoDopen`
+**zero** times. It never lists a directory, anywhere. All it does with the memory stick is three
+devctls: register a callback, set the code page, ask the capacity. It never enumerates it.
+
+That ties three separate-looking symptoms together:
+
+- homebrew on the memory stick doesn't show up
+- the media categories are empty
+- choosing an item does nothing
+
+The XMB is drawing its shell — the bar, the clock, the battery, and the fixed entries like "Saved
+Data Utility", which is built in rather than scanned for — but the layer that fills categories with
+content never starts. That layer is the per-category plugins: `game_plugin.prx`, `video_plugin.prx`,
+`music_main_plugin.prx`, `photo_main_plugin.prx`. Only `opening_plugin.prx`, `impose_plugin.prx` and
+`mpeg_vsh.prx` are ever loaded, and the loading mechanism demonstrably works, so the question is not
+how to load them but what makes the VSH ask.
+
+Breaking on the `vshKernelLoadModuleVSH` import stub and reading the caller each time says where to
+look. `mpeg_vsh.prx` is a one-off, loaded straight from `vshmain` (`ra = 0x0881005c`). The two
+plugins both come through a single generic routine in `paf.prx` (`ra = 0x0889ef6c` for both), which
+does the same three things each time: create an object, hand it the path with a type argument of 3,
+and store it in a slot. The bridge call itself is indirect, through a function pointer in paf's own
+dispatch table at `0x089ED428`, so this is a method on a plugin object rather than anything specific
+to those two modules — `game_plugin.prx` would take exactly the same route.
+
+**The table that says which plugin belongs to which item is in `vshmain`.** It sits at
+`0x08853f84` on a 6.61 dump, 70 records of 0x28 bytes each, and the layout is unambiguous: a
+32-byte zero-padded module name, then a `u32` column and a `u32` item id.
+
+```
+0885418c  67 61 6d 65 5f 70 6c 75 67 69 6e 00 ...   game_plugin
+      +20  05 00 00 00  1c 00 00 00                 column 5, id 0x1c
+```
+
+Grouped by column it is recognisably the XMB:
+
+| column | plugins |
+| --- | --- |
+| 0 | `sysconf_plugin`, `netconf_plugin`, `update_plugin`, `bluetooth_plugin` |
+| 1 | `game_plugin` (4x), `oneseg_launcher_plugin` |
+| 2 | `launcher_plugin`, `camera_plugin` |
+| 3 | `launcher_plugin`, `video_plugin`, `game_plugin` (2x) |
+| 4 | `video_plugin`, `msvideo_plugin` |
+| 5 | `savedata_plugin`, `netplay_client_plugin`, `game_plugin` |
+| 6 | `htmlviewer_plugin`, `lftv_plugin`, `psn_plugin`, `skype_plugin`, `radioshack_plugin`, ... |
+| 7 | `psn_plugin` |
+
+So the data that would drive loading `game_plugin.prx` is right there and complete. What is still
+missing is the code that walks it. It is not addressed by a `lui`/`addiu` pair anywhere in `.text`,
+and there is no `R_MIPS_32` pointer to it anywhere in the module image, so it is reached some other
+way. Scanning for indexed access (`lui` + a load whose offset supplies the low half) drowns in false
+positives: a naive scan reports ~100 reads of `0x08854000`, which is inside the zero padding of
+record 3's name and therefore cannot be real - the register tracking just needs to be better than
+this to be worth anything.
+
+**Nothing ever reads that table.** A memory read breakpoint over all 70 records
+(`memory.breakpoint.add` with `read`, `log`, and `enabled: false` so the run continues) does not
+trip once - not while booting, not while moving between categories, and not on confirm. The obvious
+objection is that the table might only be consulted when an item is actually chosen, so that case
+was checked with the framebuffer captured at each step to prove the input landed: the bar visibly
+moves from Game to Network, "Internet Browser" is selected - an entry this very table maps to
+`htmlviewer_plugin` - and confirm is pressed. The read count does not move. The apparatus was validated in the same run rather than trusted: a second breakpoint on the
+alarm count array at `0x088595C0`, which is known to be read at startup, fired four times and named
+`PC=0883f0ac`, which is exactly the `lw` that reads it. So the negative is real, and the whole
+subsystem that would consult the item-to-plugin map is dormant rather than merely failing partway.
+
+Worth knowing if you repeat this: a hit is logged to `Log::MemMap` at NOTICE level in the form
+`CHK Read32(interpret) at <addr> (...), PC=<pc> (...)`, so grep for `CHK `. Searching for
+"memcheck" or "breakpoint" finds nothing and looks like a clean negative when it isn't.
+
+So the gate is above that routine, in whatever decides to create a plugin object at all. Getting
+there is harder than it sounds: PPSSPP's debugger has no backtrace, and picking saved return
+addresses out of the stack by eye gives plausible but wrong answers (one such address turned out to
+belong to an unrelated call). The two approaches that should work are a conditional breakpoint on
+the load routine that ignores the two known paths, or finding the plugin descriptor table
+statically — the paths are assembled at runtime from name fragments in `vshmain`'s data, so whatever
+iterates those fragments is the dispatcher.
+
+**Input works; starting anything does not.** Injecting buttons over the WebSocket debugger
+(`input.buttons.press`) moves the bar between categories and redraws the column, icons and text and
+all. Note the confirm button is **circle**, not cross — PPSSPP's registry dump came off a
+Japanese-configured PSP, and `/CONFIG/SYSTEM/XMB/button_assign` reads 1.
+
+Choosing an item is a different story. Both "Internet Browser" and "Saved Data Utility" do the same
+thing: the bar animates away, and then it comes back, with nothing having happened. That is not a
+crash and not a missing library — over a 1.1-million-line boot-and-press log there is no bad access,
+no assert, no unresolved import called, and no mention of `htmlviewer_plugin.prx` at all. The
+`vshKernelLoadExecVSH*` entry points are imported but never called, and pressing the button produces
+*no HLE activity whatsoever* beyond the once-a-second clock and battery polls. So the VSH decides
+against launching entirely on its own, without asking PPSSPP anything, and finding out why means
+reverse engineering `vshmain`'s menu dispatcher rather than watching what it calls.
+
+One suspect has been ruled out, which is worth writing down so nobody re-runs it.
+`sceVshBridge_D3A07961` is by far the most-called stub - about twice a frame, ~8,000 times in a
+boot - so it looked like a natural culprit. Read off its call site in `paf.prx`, it is:
+
+```c
+int get_cached_value() {
+    u32 out[4];
+    if (sceVshBridge_D3A07961(&out, 0, 1, 0) != 0) {
+        g_cached = out[2];   // changed - take the new value
+        return out[2];
+    }
+    return g_cached;         // unchanged - keep the old one
+}
+```
+
+The return value is a "did this change?" flag and the payload arrives at offset 8 of the output
+buffer. Returning 0 means "nothing changed", so `paf` falls back on its cache - which stays 0,
+because nothing ever fills it. That is benign, unlike the impose params above where *erroring* was
+the damaging answer, and it is not why items don't start.
+
+**`sceResmgr` is answered without decrypting anything** (`Core/HLE/sceResmgr.cpp`). It is the one
+library on that list the XMB has actually called, and the way out of it is worth writing down,
+because the obvious reading — "this needs Sony's crypto, so it is out of reach" — turns out to be
+wrong.
+
+Read off the call site in `vsh_module` (there is no argument list for it in PSPLibDoc, and no name
+for the NID either), it is `int sceResmgr_9DC14891(void *buf, int size, int *outSize)`. The caller
+reads `flash0:/vsh/etc/index_<model>g.dat` — 496 bytes on a 6.61 dump — closes the file, hands the
+buffer straight over, and branches on the sign of the result:
+
+```
+jal   sceIoClose
+move  a0, s1          ; buffer
+move  a1, s2          ; size
+jal   sceResmgr_9dc14891
+move  a2, s4          ; &outSize
+move  s0, v0
+bgez  s0, <success>   ; anything negative -> wipe the buffer and give up
+```
+
+So it decrypts `index.dat` in place and reports the plaintext length. The file really is encrypted:
+measured over the dump's copy, the first 0x40 bytes carry 2.78 bits of entropy per byte (a plaintext
+header, magic `PSPsysGP`), 0x40–0x100 carries 3.49 (structure plus two dense blocks at 0x80 and 0xc0
+that look like a signature and a hash), and the last 240 bytes carry **7.13**. Stubbing this to
+return success would therefore have been actively harmful, not merely useless — the VSH would have
+parsed 240 bytes of ciphertext as a version string.
+
+**But the plaintext is already in the dump.** `index.dat` holds the firmware version and build
+information, and Sony ships the same thing in the clear beside it as `flash0:/vsh/etc/version.txt` —
+the PSP dev wiki has said so for years, and the dump agrees: every `index_XXg.dat` carries a
+little-endian u32 at offset 0xB0 that is the exact byte length of the `version.txt` next to it (159
+on 6.61, on all seven per-model files). So PPSSPP checks the magic, checks that the declared length
+matches, and serves `version.txt`. Anything that doesn't line up returns an error, which is the path
+the caller already handles.
+
+That this is the right answer is easy to confirm from a boot log rather than taken on trust: the VSH
+copies the buffer out and immediately splits it into runs of 13, 37, 36, 50 and 18 bytes, which are
+exactly the five line lengths of `version.txt`. On the failure path it did `sceKernelMemset(buf, 0,
+0x1f0)` instead.
+
+Actually decrypting it stays out of reach, and would only be needed for a dump with no `version.txt`:
+
+- `pspDecryptPRX` (`Core/ELF/PrxDecrypter.h`), PPSSPP's only decryption entry point, expects a `~PSP`
+  header. `index.dat` is not one — the field at offset 0 is `PSPs`, and `elf_size` reads as
+  `0x0fff0000` for a 496-byte file. Some later offsets do line up with `PSP_Header` (48 bytes at 0x80
+  where `key_data0` lives, `comp_size` at 0xb0), so the layouts are probably related, but "probably
+  related" is not something to build a decryptor on.
+- `pspdecrypt` rejects the file outright with `Unknown input file format!`, so the PC-side route that
+  works for modules — see "How to try it" — does not cover it either, and `Tools/extract_flash0.py`
+  does not touch `vsh/etc` at all.
+- The implementations that do exist are GPLv3, which cannot go into PPSSPP (GPLv2-or-later), not even
+  paraphrased. It would have to be rewritten from the algorithm, as with KL4E above. `ext/libkirk`
+  already has the primitives (AES, SHA-1, the AMCTRL/PGD helpers, bignum and elliptic curve), so the
+  missing piece is the container format and the key derivation, not the crypto.
+
+The other five libraries still have no call site at all and are deliberately left alone, for the
+reason this section opened with — stubbing a function whose purpose is unknown means guessing its
+contract.
+
+Adding these follows the normal recipe in `AGENTS.md`. For NIDs and names, use
+[PSPLibDoc](https://github.com/pspdev/psplibdoc) (GPL-2.0) — it has per-firmware exports for every
+module, and marks which names hash to their NID. For user-mode libraries the NID is the first four
+bytes of the SHA-1 of the export name read little-endian, which is a cheap way to check a name/NID
+pair; for kernel libraries from firmware 3.70 on it is not, because SCE obfuscated them.
+
+`scePaf` (the VSH's whole widget/resource framework) does **not** need HLE — `paf.prx` is a real
+module in the dump and runs as-is, and PPSSPP now loads it (see the boot path above). Nothing in
+the HLE blacklist (`g_moduleMeta` in `Core/HLE/HLE.cpp`) matches `vshmain`, `paf` or the `*_plugin`
+modules, so they are loaded for real rather than faked.
+
+With a pre-decrypted tree this, not decompression, is what stands between here and an XMB frame.
+
+### 3. Privilege model
+
+VSH-mode modules run in user space on real hardware, so loading them into the user partition — which
+is what PPSSPP does — is right. What's missing is the privilege *rights* that go with it:
+
+- Privilege is a property of the HLE function being called (the `HLE_KERNEL_SYSCALL` flag, via
+  `hleIsKernelMode()`), not of the calling module. So a VSH module asking
+  `sceKernelAllocPartitionMemory` for the kernel partition gets
+  `SCE_KERNEL_ERROR_ILLEGAL_PARTITION` regardless of what it is.
+- Nothing gates `*ForKernel` or vsh-only exports, in either direction.
+- Modules that need to land at a fixed address in a specific partition can't say so:
+  `sceKernelLoadModule` rejects `PSP_SMEM_Addr` and discards the lmoption partition IDs.
+- Memory size is picked by the generic non-FAT-model rule, not from what the real VSH would see.
+- The kernel partition is only 4 MB and doubles as PPSSPP's own HLE scratch heap (the PPGe font
+  atlas, per-thread return hacks, Atrac contexts, one `SceModule` per loaded module), which real
+  firmware would be using for resident kernel code.
+
+Genuine kernel-mode modules are further out of reach: `MIPSState` has no COP0 at all, and
+`mfc0`/`mtc0`/`eret`/`tlbw*` are decoded but unimplemented.
+
+### 4. The registry
+
+`Core/HLE/sceReg.cpp` is a static const dump of a real PSP's registry. Writes used to be stubs that
+returned success while changing nothing, so the VSH's first-boot setup could never complete — it
+would write the owner name or language and read back the dumped value.
+
+`sceRegSetKeyValue` now works, through an in-memory overlay that shadows the static tree on reads.
+Two limits, both deliberate:
+
+- **Session-local.** The overlay is cleared on init and never reaches the host, so a title that pokes
+  at the system settings can't affect the next one, or the user's PPSSPP config. It *is* serialized
+  into savestates, since whoever wrote a value expects to read it back.
+- **Existing keys only.** Key handles are plain indices into the static array, so adding a key would
+  move the handles of everything after it. `sceRegCreateKey` therefore still refuses. The XMB writes
+  keys that exist in the dump, so this hasn't been a problem.
+
+There's still no `flash1:` backing — the registry and the mounted `flash1:` volume are unrelated.
+
+## Finding out what's actually needed
+
+`Tools/dump_prx_imports.py` walks a module's `.lib.stub` import tables and cross-references every
+(library, NID) pair against PPSSPP's own HLE tables, so it can say what a dump wants that PPSSPP
+doesn't have:
+
+```
+python3 Tools/dump_prx_imports.py <flash0 dir>/vsh/module/vshmain.prx
+python3 Tools/dump_prx_imports.py <flash0 dir> --summary       # ranked work list for a whole tree
+```
+
+Its output is library names, NIDs and counts, so it's a way to work out what to implement next
+without moving firmware around. Modules have to be decrypted first.
+
+## Debugging tips
+
+- **Reproduce crashes on the interpreter** (`-i`). Breakpoints are far more reliable there than on the
+  JITs, and it's the only backend where a bad memory access can tell you *which* instruction faulted
+  and which register held the address:
+
+  ```
+  Read Word: Invalid access at deadc007 ... op: lw a0, 0x18(t3) (address = t3(deadbfef) + 24)
+  ```
+
+  Under a JIT the pc reported at a fault is the start of the compiled block, not the faulting
+  instruction, so that line is left out rather than pointing at the wrong opcode.
+- **`--memread=ignore` (and `--memwrite=ignore`) walks straight past a bad access** instead of
+  stopping emulation, so one wild pointer doesn't hide everything behind it. Good for finding out
+  how much further the boot would get; the results after the first bad access are fiction, so don't
+  read anything into them beyond "what does it try next".
+- `PPSSPPHeadless --debugger=PORT` breaks before anything runs, so you can step from the first
+  instruction. See [WebSocketDebugger.md](WebSocketDebugger.md), and `Tools/wsdbg/`.
+- **A deterministic bad pointer is not always a missing import.** The first real blocker here turned
+  out to be a loader bug, not an HLE gap: `LoadRelocations2` never recorded `last_type`, so the
+  "reuse the previous entry's lo16" form of a `R_MIPS_HI16` relocation always fell back to an addend
+  of 0. That drops the +1 carry when the low half is negative, and the `lui` ends up pointing
+  0x10000 below the symbol. In `vshmain` this hit exactly one of the two `lui`s that build the alarm
+  table address, so a loop bound was read out of an unrelated float table as 0x3F666666 (`0.9f`) and
+  the loop walked off the end of a 1-element array. It looks like anything but a relocation problem:
+  no error, no stub, identical on every run. If a pointer is wrong but *stable*, compare the
+  disassembly of the loaded code against the module on disk before hunting for a missing function —
+  `memory.disasm` over the WebSocket debugger shows the relocated instruction, which is the one that
+  matters.
+- Watch for `no module provides library` lines at boot — that's the definitive list of what's
+  missing, printed once, before anything can go wrong because of it. At runtime, an actual call
+  through such a stub logs `Unresolved import <library>/<nid> called from '<module>'`; that lookup
+  finds the stub through `ra` (a stub is `jr ra; syscall`, so the `jal` that called it sits at
+  `ra - 8`) rather than through `pc`, which means different things on each CPU backend.

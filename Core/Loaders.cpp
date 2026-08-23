@@ -37,6 +37,7 @@
 #include "Core/Core.h"
 #include "Core/System.h"
 #include "Core/ELF/PBPReader.h"
+#include "Core/ELF/PSPElfTypes.h"
 #include "Core/ELF/ParamSFO.h"
 #include "Core/Util/GameManager.h"
 
@@ -221,8 +222,15 @@ IdentifiedFileType Identify_File(FileLoader *fileLoader, std::string *errorStrin
 		return IdentifiedFileType::ARCHIVE_7Z;
 	}
 
-	if (id == 'FLE\x7F') {
+	// ELF_MAGIC is a plain ELF/PRX. PSP_MAGIC ("~PSP") and SCE_MAGIC ("~SCE") are encrypted and/or
+	// signed modules, as found in a dumped flash0 - the module loader knows how to decrypt those,
+	// so accept them here too instead of rejecting them as unknown files.
+	if (id == ELF_MAGIC || id == PSP_MAGIC || id == SCE_MAGIC) {
 		Path filename = fileLoader->GetPath();
+		// The PSP's system software (the XMB) gets its own boot path, see docs/XMB.md.
+		if (equalsNoCase(filename.GetFilename(), "vshmain.prx")) {
+			return IdentifiedFileType::PSP_VSH;
+		}
 		// There are a few elfs misnamed as pbp (like Trig Wars), accept that. Also accept extension-less paths.
 		if (extension == ".plf" || strstr(filename.GetFilename().c_str(), "BOOT.BIN") ||
 			extension == ".elf" || extension == ".prx" || extension == ".pbp" || extension.empty()) {
@@ -646,6 +654,7 @@ const char *IdentifiedFileTypeToString(IdentifiedFileType type) {
 	case IdentifiedFileType::PSP_PBP_DIRECTORY: return "PSP_PBP_DIRECTORY";
 	case IdentifiedFileType::PSP_PBP: return "PSP_PBP";
 	case IdentifiedFileType::PSP_ELF: return "PSP_ELF";
+	case IdentifiedFileType::PSP_VSH: return "PSP_VSH";
 	case IdentifiedFileType::PSP_ISO: return "PSP_ISO";
 	case IdentifiedFileType::PSP_ISO_NP: return "PSP_ISO_NP";
 	case IdentifiedFileType::PSP_DISC_DIRECTORY: return "PSP_DISC_DIRECTORY";

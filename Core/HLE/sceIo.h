@@ -29,6 +29,7 @@ struct ScePspDateTime;
 struct tm;
 
 u32 sceIoIoctl(u32 id, u32 cmd, u32 indataPtr, u32 inlen, u32 outdataPtr, u32 outlen);
+u32 sceIoDevctl(const char *name, int cmd, u32 argAddr, int argLen, u32 outPtr, int outLen);
 
 // Called by sceIoIoctl, which normally applies the delay this function writes to usec.
 // If you need to call sceIoIoctl from a HLE function implementation more than once, use

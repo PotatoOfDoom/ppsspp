@@ -74,6 +74,13 @@ void __UmdInit()
 	umdStatTimeoutEvent = CoreTiming::RegisterEvent("UmdTimeout", __UmdStatTimeout);
 	umdStatChangeEvent = CoreTiming::RegisterEvent("UmdChange", __UmdStatChange);
 	umdInsertChangeEvent = CoreTiming::RegisterEvent("UmdInsertChange", __UmdInsertChange);
+	// A game always has its disc. The VSH does not, and claiming otherwise is not harmless: it reads
+	// umd_autoboot out of the registry (1 on a real dump), is told there is a game disc in the
+	// drive, tries to start it, fails the region check and puts up "This disc cannot be started"
+	// instead of its menu. See docs/XMB.md.
+	// Assigning it here also means a UMD change from an earlier run in the same process can't leak
+	// into this one - nothing reset it before.
+	UMDInserted = PSP_CoreParameter().fileType != IdentifiedFileType::PSP_VSH;
 	umdActivated = true;
 	umdStatus = 0;
 	umdErrorStat = 0;
@@ -118,6 +125,10 @@ void __UmdDoState(PointerWrap &p)
 		UMDInserted = true;
 	}
 	CoreTiming::RestoreRegisterEvent(umdInsertChangeEvent, "UmdInsertChange", __UmdInsertChange);
+}
+
+bool UmdDiscPresent() {
+	return UMDInserted;
 }
 
 static u8 __KernelUmdGetState() {
@@ -170,10 +181,16 @@ static void __UmdInsertChange(u64 userdata, int cyclesLate) {
 
 static void __KernelUmdActivate()
 {
-	u32 notifyArg = PSP_UMD_PRESENT | PSP_UMD_READABLE;
-	// PSP_UMD_READY will be returned when sceKernelGetCompiledSdkVersion() != 0
-	if (sceKernelGetCompiledSdkVersion() != 0) {
-		notifyArg |= PSP_UMD_READY;
+	// A game always has its disc, so this is unchanged for them. The VSH activates the drive before
+	// it knows whether anything is in it, and reads this notification as the answer - saying
+	// PRESENT to it means it goes looking for a disc that isn't there.
+	u32 notifyArg = PSP_UMD_NOT_PRESENT;
+	if (UMDInserted) {
+		notifyArg = PSP_UMD_PRESENT | PSP_UMD_READABLE;
+		// PSP_UMD_READY will be returned when sceKernelGetCompiledSdkVersion() != 0
+		if (sceKernelGetCompiledSdkVersion() != 0) {
+			notifyArg |= PSP_UMD_READY;
+		}
 	}
 	if (driveCBId != 0)
 		__KernelNotifyCallback(driveCBId, notifyArg);
@@ -185,7 +202,7 @@ static void __KernelUmdActivate()
 
 static void __KernelUmdDeactivate()
 {
-	u32 notifyArg = PSP_UMD_PRESENT | PSP_UMD_READY;
+	u32 notifyArg = UMDInserted ? (PSP_UMD_PRESENT | PSP_UMD_READY) : PSP_UMD_NOT_PRESENT;
 	if (driveCBId != 0)
 		__KernelNotifyCallback(driveCBId, notifyArg);
 

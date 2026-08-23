@@ -666,7 +666,13 @@ int main(int argc, const char* argv[]) {
 	UpdateUIState(UISTATE_INGAME);
 
 	if (cmdLineOptions.bootVSH.has_value() && cmdLineOptions.bootVSH.value()) {
-		AddToTestsByPath(&testFilenames, (g_Config.flash0Directory / "vsh/module/vshmain.prx").ToString());
+		const Path vshMain = g_Config.flash0Directory / "vsh/module/vshmain.prx";
+		if (!File::Exists(vshMain)) {
+			fprintf(stderr, "--vsh: no vsh/module/vshmain.prx under '%s' - see docs/XMB.md for the required firmware dump.\n",
+				g_Config.flash0Directory.c_str());
+			return 1;
+		}
+		AddToTestsByPath(&testFilenames, vshMain.ToString());
 	}
 	if (testFilenames.empty()) {
 		return printUsage(cmdLineOptions, argv[0], argc <= 1 ? NULL : "No executables specified");

@@ -1,4 +1,4 @@
-// Copyright (c) 2012- PPSSPP Project.
+// Copyright (c) 2026- PPSSPP Project.
 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -17,30 +17,10 @@
 
 #pragma once
 
-#include "Common/File/Path.h"
+#include "Common/CommonTypes.h"
 
-enum pspUmdState { 
-	PSP_UMD_INIT        = 0x00,
-	PSP_UMD_NOT_PRESENT = 0x01,
-	PSP_UMD_PRESENT     = 0x02,
-	PSP_UMD_CHANGED     = 0x04,
-	PSP_UMD_NOT_READY   = 0x08,
-	PSP_UMD_READY       = 0x10, 
-	PSP_UMD_READABLE    = 0x20,
-};
+void Register_sceIdStorage();
 
-enum pspUmdType {
-	PSP_UMD_TYPE_GAME  = 0x10,
-	PSP_UMD_TYPE_VIDEO = 0x20,
-	PSP_UMD_TYPE_AUDIO = 0x40,
-};
-
-void __UmdInit();
-// True if there is a disc in the drive. False only when booting the VSH, which has none.
-bool UmdDiscPresent();
-void __UmdDoState(PointerWrap &p);
-
-void __UmdReplace(const Path &filepath);
-bool getUMDReplacePermit();
-
-void Register_sceUmdUser();
+// Exposed so the VSH bridge in sceVshBridge.cpp goes through the same implementation.
+int sceIdStorageLookup(u32 leafId, u32 offset, u32 bufPtr, u32 len);
+int sceIdStorageReadLeaf(u32 leafId, u32 bufPtr);

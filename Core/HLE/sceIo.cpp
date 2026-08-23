@@ -37,6 +37,7 @@
 #include "Core/Debugger/MemBlockInfo.h"
 #include "Core/ELF/ParamSFO.h"
 #include "Core/MemMapHelpers.h"
+#include "Core/PSPLoaders.h"
 #include "Core/System.h"
 #include "Core/HDRemaster.h"
 #include "Core/SaveState.h"
@@ -672,6 +673,13 @@ void __IoInit() {
 	pspFileSystem.Mount("pfat0:", memstickSystem);
 
 	pspFileSystem.Mount("flash0:", flash0System);
+
+	if (PSP_CoreParameter().fileType == IdentifiedFileType::PSP_VSH) {
+		// Booting the PSP's own system software - it needs a real flash0 dump plus the other flash
+		// volumes, overriding the mount above. Only done for a VSH boot, so games keep seeing the
+		// exact mount list they always have (which savestates depend on).
+		MountVSHFlash();
+	}
 
 	if (g_RemasterMode) {
 		const std::string gameId = g_paramSFO.GetDiscID();
@@ -1666,17 +1674,20 @@ struct DeviceSize {
 	u32_le sectorCount;
 };
 
-static u32 sceIoDevctl(const char *name, int cmd, u32 argAddr, int argLen, u32 outPtr, int outLen) {
+u32 sceIoDevctl(const char *name, int cmd, u32 argAddr, int argLen, u32 outPtr, int outLen) {
 	if (strcmp(name, "emulator:")) {
 		DEBUG_LOG(Log::sceIo,"sceIoDevctl(\"%s\", %08x, %08x, %i, %08x, %i)", name, cmd, argAddr, argLen, outPtr, outLen);
 	}
 
 	// UMD checks
 	switch (cmd) {
-	case 0x01F20001:  
+	case 0x01F20001:
 		// Get UMD disc type
 		if (Memory::IsValidAddress(outPtr) && outLen >= 8) {
-			Memory::Write_U32(0x10, outPtr + 4);  // Always return game disc (if present)
+			// This used to answer "game disc" whatever the drive held, which is fine for a game -
+			// it has one by definition - but not for the VSH, which asks this to decide whether to
+			// autoboot and then complains it can't start the disc it was told about.
+			Memory::Write_U32(UmdDiscPresent() ? PSP_UMD_TYPE_GAME : 0, outPtr + 4);
 			return hleLogDebug(Log::sceIo, 0);
 		} else {
 			return hleLogError(Log::sceIo, SCE_ERROR_MEMSTICK_DEVCTL_BAD_PARAMS);
@@ -1944,7 +1955,19 @@ static u32 sceIoDevctl(const char *name, int cmd, u32 argAddr, int argLen, u32 o
 				}
 			}
 			break;
-		case 0x02415823:  
+		case 0x02425856:
+			// Set the OEM code page the FAT driver uses for 8.3 short names. The VSH sends this
+			// once at startup, immediately after reading /CONFIG/SYSTEM/CHARACTER_SET/oem, with
+			// that exact value; flash0:/codepage/cptbl.dat is the table it refers to. There is
+			// nothing to apply here - ms0: is a host directory and PPSSPP never sees a short name -
+			// but answering SCE_KERNEL_ERROR_UNSUP to a plain settings push is worse than saying
+			// it was accepted.
+			if (Memory::IsValidRange(argAddr, 4)) {
+				return hleLogDebug(Log::sceIo, 0, "set FAT OEM code page %d (nothing to apply)",
+					Memory::Read_U32(argAddr));
+			}
+			return hleLogError(Log::sceIo, SCE_KERNEL_ERROR_ERRNO_INVALID_ARGUMENT, "no code page");
+		case 0x02415823:
 			// Set FAT as enabled
 			if (Memory::IsValidAddress(argAddr) && argLen == 4) {
 				MemoryStick_SetFatState((MemStickFatState)Memory::Read_U32(argAddr));

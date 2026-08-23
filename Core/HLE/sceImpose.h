@@ -22,3 +22,11 @@ class PointerWrap;
 void Register_sceImpose();
 void __ImposeInit();
 void __ImposeDoState(PointerWrap &p);
+
+// The impose params, for sceImposeGetParam/SetParam. Used by the VSH bridges in sceVshBridge.cpp -
+// the kernel-side sceImpose_driver library that normally exports these can't be implemented, since
+// its NIDs were obfuscated from firmware 3.70 on and never recovered. Return false for a param ID
+// we don't know.
+bool ImposeGetParam(int param, int *value);
+bool ImposeSetParam(int param, int value);
+const char *ImposeParamName(int param);

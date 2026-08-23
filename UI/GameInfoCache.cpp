@@ -685,6 +685,17 @@ public:
 			}
 			break;
 
+		case IdentifiedFileType::PSP_VSH:
+			// The PSP's own system software. Like an ELF it carries no metadata of its own, but at
+			// least give it a name instead of showing "vshmain.prx". See docs/XMB.md.
+			info_->title = "PSP System Software";
+			if (flags_ & GameInfoFlags::PARAM_SFO) {
+				info_->id = "PSPVSH000";
+				info_->id_version = info_->id + "_1.00";
+				info_->region = GameRegion::HOMEBREW;
+			}
+			break;
+
 		case IdentifiedFileType::PSP_ELF:
 handleELF:
 			info_->title = info_->GetFilePath().GetFilename();

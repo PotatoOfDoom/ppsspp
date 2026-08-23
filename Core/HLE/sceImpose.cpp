@@ -38,7 +38,94 @@ static u32 buttonValue = PSP_SYSTEMPARAM_BUTTON_CIRCLE;
 static u32 umdPopup = PSP_UMD_POPUP_DISABLE;
 static u32 backlightOffTime;
 
+// The impose params, as used by sceImposeGetParam/SetParam. Names and IDs from PSPSDK's
+// pspimpose_driver.h. These are the system settings the XMB's own settings screens read and write;
+// PPSSPP has no separate state for most of them, so they simply round-trip. LANGUAGE and
+// BACKLIGHT_OFF_INTERVAL are aliases for state we already keep, and are handled separately.
+static const struct ImposeParam {
+	int id;
+	const char *name;
+	int defaultValue;
+} g_imposeParams[] = {
+	{0x001, "MAIN_VOLUME",           30},
+	{0x002, "BACKLIGHT_BRIGHTNESS",   2},
+	{0x004, "EQUALIZER_MODE",         0},
+	{0x008, "MUTE",                   0},
+	{0x010, "AVLS",                   0},
+	{0x020, "TIME_FORMAT",            0},
+	{0x040, "DATE_FORMAT",            0},
+	{0x400, "SOUND_REDUCTION",        0},
+};
+static const int PSP_IMPOSE_PARAM_LANGUAGE = 0x080;
+static const int PSP_IMPOSE_PARAM_BACKLIGHT_OFF_INTERVAL = 0x200;
+
+static int imposeParamValues[ARRAY_SIZE(g_imposeParams)];
+
+static int ImposeParamIndex(int param) {
+	for (size_t i = 0; i < ARRAY_SIZE(g_imposeParams); i++) {
+		if (g_imposeParams[i].id == param) {
+			return (int)i;
+		}
+	}
+	return -1;
+}
+
+const char *ImposeParamName(int param) {
+	switch (param) {
+	case PSP_IMPOSE_PARAM_LANGUAGE: return "LANGUAGE";
+	case PSP_IMPOSE_PARAM_BACKLIGHT_OFF_INTERVAL: return "BACKLIGHT_OFF_INTERVAL";
+	default:
+	{
+		const int index = ImposeParamIndex(param);
+		return index >= 0 ? g_imposeParams[index].name : "(unknown)";
+	}
+	}
+}
+
+bool ImposeGetParam(int param, int *value) {
+	switch (param) {
+	case PSP_IMPOSE_PARAM_LANGUAGE:
+		*value = language;
+		return true;
+	case PSP_IMPOSE_PARAM_BACKLIGHT_OFF_INTERVAL:
+		*value = backlightOffTime;
+		return true;
+	default:
+	{
+		const int index = ImposeParamIndex(param);
+		if (index < 0) {
+			return false;
+		}
+		*value = imposeParamValues[index];
+		return true;
+	}
+	}
+}
+
+bool ImposeSetParam(int param, int value) {
+	switch (param) {
+	case PSP_IMPOSE_PARAM_LANGUAGE:
+		// Same as sceImposeSetLanguageMode: we don't let the guest change our language setting.
+		return language == (u32)value;
+	case PSP_IMPOSE_PARAM_BACKLIGHT_OFF_INTERVAL:
+		backlightOffTime = value;
+		return true;
+	default:
+	{
+		const int index = ImposeParamIndex(param);
+		if (index < 0) {
+			return false;
+		}
+		imposeParamValues[index] = value;
+		return true;
+	}
+	}
+}
+
 void __ImposeInit() {
+	for (size_t i = 0; i < ARRAY_SIZE(g_imposeParams); i++) {
+		imposeParamValues[i] = g_imposeParams[i].defaultValue;
+	}
 	language = GetPSPLanguage();
 	if (PSP_CoreParameter().compat.flags().EnglishOrJapaneseOnly) {
 		if (language != PSP_SYSTEMPARAM_LANGUAGE_ENGLISH && language != PSP_SYSTEMPARAM_LANGUAGE_JAPANESE) {
@@ -51,7 +138,7 @@ void __ImposeInit() {
 }
 
 void __ImposeDoState(PointerWrap &p) {
-	auto s = p.Section("sceImpose", 1);
+	auto s = p.Section("sceImpose", 1, 2);
 	if (!s)
 		return;
 
@@ -59,6 +146,11 @@ void __ImposeDoState(PointerWrap &p) {
 	Do(p, buttonValue);
 	Do(p, umdPopup);
 	Do(p, backlightOffTime);
+	if (s >= 2) {
+		DoArray(p, imposeParamValues, (int)ARRAY_SIZE(imposeParamValues));
+	}
+	// Older states simply keep the defaults __ImposeInit set, which is fine - these are settings,
+	// not state a game depends on.
 }
 
 static u32 sceImposeGetBatteryIconStatus(u32 chargingPtr, u32 iconStatusPtr)
