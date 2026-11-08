@@ -381,12 +381,41 @@ Worth knowing if you repeat this: a hit is logged to `Log::MemMap` at NOTICE lev
 "memcheck" or "breakpoint" finds nothing and looks like a clean negative when it isn't.
 
 So the gate is above that routine, in whatever decides to create a plugin object at all. Getting
-there is harder than it sounds: PPSSPP's debugger has no backtrace, and picking saved return
-addresses out of the stack by eye gives plausible but wrong answers (one such address turned out to
-belong to an unrelated call). The two approaches that should work are a conditional breakpoint on
-the load routine that ignores the two known paths, or finding the plugin descriptor table
-statically — the paths are assembled at runtime from name fragments in `vshmain`'s data, so whatever
-iterates those fragments is the dispatcher.
+there is **`hle.backtrace`** — the debugger does have a stack walk, which an earlier round of this
+missed, wasting a detour through reading saved return addresses off the stack by eye (that gave a
+plausible but wrong answer: the address picked as the caller belonged to an unrelated call). It
+needs `cpu.stepping` first and returns a frame list with each function's entry address.
+
+Walked properly, loading a plugin looks like this:
+
+```
+#0  08896724   set the plugin up from a descriptor, create the object, load the module
+#1  08895310   allocate a 0x1D8-byte object, pass the job's parameter, store the result
+#2  089303b0   the ScePafJob worker thread
+```
+
+So it runs as a paf **job**, one per plugin, and `#1`'s argument is a descriptor. Caught live, a
+descriptor is a run of (pointer, length) pairs and decodes cleanly:
+
+| offset | contents |
+| --- | --- |
+| `+0x00` | `opening_plugin` — the name |
+| `+0x0c` | `__main__` — the entry symbol |
+| `+0x28` | `flash0:/vsh/resource/opening_plugin.rco` |
+| `+0x50` | `flash0:/vsh/module/opening_plugin.prx` |
+| `+0x54` | 37 — the length of that path |
+| `+0x60` | 3 — the type |
+
+The gate turns out to be mundane: the branch deciding whether to load anything is
+`if (desc->0x54 != 0)`, i.e. *does this entry name a module at all*. Entries without a `.prx` are
+skipped by design, not by failure.
+
+The useful part is where those strings live: `09c0xxxx`, the **heap**. Descriptors are built at
+runtime, not read out of the static table above — which independently explains why a read
+breakpoint on that table never fires. It is not the live source at this stage. So the question moves
+one level further out again: what builds a descriptor and posts the job. Only two are ever posted,
+`opening_plugin` and `impose_plugin`, and both are plugins the XMB needs regardless of any menu — so
+whatever would post the category ones is still the thing that never runs.
 
 **Input works; starting anything does not.** Injecting buttons over the WebSocket debugger
 (`input.buttons.press`) moves the bar between categories and redraws the column, icons and text and
