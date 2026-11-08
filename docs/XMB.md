@@ -415,7 +415,34 @@ runtime, not read out of the static table above — which independently explains
 breakpoint on that table never fires. It is not the live source at this stage. So the question moves
 one level further out again: what builds a descriptor and posts the job. Only two are ever posted,
 `opening_plugin` and `impose_plugin`, and both are plugins the XMB needs regardless of any menu — so
-whatever would post the category ones is still the thing that never runs.
+whatever would post the category ones is still the thing that never runs.
+
+Chasing that one level further, the descriptor is built on the `SCE_VSH_GRAPHICS` thread, and the
+backtrace lands back in `vshmain`:
+
+```
+#0-#2  paf        fill the descriptor
+#3  088089f4  vshmain   make a plugin
+#4  0880a2ac  vshmain
+#5  08818bfc  vshmain
+#6  08818d14  vshmain   the SCE_VSH_GRAPHICS thread entry
+```
+
+`0x088089f4` opens with two gates on globals in `vshmain`'s data - it returns immediately if
+`*(0x0885AC80) == 1`, or if `*(0x0885ACD0) & 4` is set. Read live with the XMB up, those are `0` and
+`0x15c`, so bit 2 *is* set, and the second gate would turn every call away. A write breakpoint shows
+exactly where it gets set: right after `opening_plugin` is created, from `0x088092c0` reached via
+`jal 0x0880AE58`, after which `opening_plugin` itself ORs more bits in (`0x4` to `0xc` to `0x10c`).
+
+**That is not the explanation, though.** Driving the breakpoint through a whole boot, `0x088089f4`
+is called exactly **once** - for `opening_plugin`, while the flag is still `0` - and never again.
+The gate is never re-evaluated, so it blocks nothing.
+
+That has now happened at every level: the static table, the loader routine, the descriptor builder,
+the gate flag. None of them is refusing. Each is simply not reached a second time. Looking for the
+condition that says no is the wrong model - there is no "no". The menu-construction path is never
+entered at all, and the thing to find is what should enter it, somewhere in how the opening sequence
+is supposed to hand over.
 
 **Input works; starting anything does not.** Injecting buttons over the WebSocket debugger
 (`input.buttons.press`) moves the bar between categories and redraws the column, icons and text and
