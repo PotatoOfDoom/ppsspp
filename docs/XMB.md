@@ -16,10 +16,12 @@ Once the opening animation ends it draws **the XrossMediaBar itself** — the ca
 Game, Network, PlayStation Network), the item under the selected category, the clock and the battery
 — out of the dump's own resources and fonts.
 
-That is as far as this has been taken. The frame is real, but nothing beyond drawing it has been
-tried: input has not been wired up or tested, nothing has been started from the menu, and the
-categories that need a memory stick or a network are certain to want things PPSSPP does not answer
-yet. See [What's still missing](#whats-still-missing).
+Input works too: buttons injected over the WebSocket debugger move the bar between categories and
+redraw it. What does not work is **starting anything** — choosing an item animates the bar away
+and back, and nothing is launched — and the media categories stay empty, because the XMB never
+enumerates the memory stick or anything else. Both come down to the same thing: the per-category
+plugins are never loaded. See [What's still missing](#whats-still-missing), and in particular
+"Input works; starting anything does not" and "The XMB never looks at the memory stick" below.
 
 To see the frame without a display, pause the emulator over the WebSocket debugger and read the
 framebuffer straight out of VRAM — it is at `0x04000000`/`0x04088000`, 480x272, stride 512, pixel
