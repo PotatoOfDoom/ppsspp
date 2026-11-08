@@ -415,8 +415,8 @@ runtime, not read out of the static table above — which independently explains
 breakpoint on that table never fires. It is not the live source at this stage. So the question moves
 one level further out again: what builds a descriptor and posts the job. Only two are ever posted,
 `opening_plugin` and `impose_plugin`, and both are plugins the XMB needs regardless of any menu — so
-whatever would post the category ones is still the thing that never runs.
-
+whatever would post the category ones is still the thing that never runs.
+
 Chasing that one level further, the descriptor is built on the `SCE_VSH_GRAPHICS` thread, and the
 backtrace lands back in `vshmain`:
 
