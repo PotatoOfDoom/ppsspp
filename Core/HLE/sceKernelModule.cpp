@@ -2002,8 +2002,10 @@ bool __KernelLoadExec(const char *filename, u32 paramPtr, std::string *error_str
 
 	// The VSH needs its shared flash0 libraries started the same way, and waited for the same way.
 	// Careful not to short-circuit the plugin load below - both need to run.
+	// Only for vshmain itself: once the VSH launches a game through loadexec the boot type is still
+	// PSP_VSH, but the game must not get paf & co. loaded into it.
 	bool waitForVSHModules = false;
-	if (PSP_CoreParameter().fileType == IdentifiedFileType::PSP_VSH) {
+	if (PSP_CoreParameter().fileType == IdentifiedFileType::PSP_VSH && !strcmp(moduleName, "vsh_module")) {
 		waitForVSHModules = LoadVSHSharedModules(module, __KernelGetCurThread());
 	}
 

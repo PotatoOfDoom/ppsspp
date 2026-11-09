@@ -43,6 +43,7 @@
 
 #include <set>
 
+#include "Core/MemMapHelpers.h"
 #include "Core/HLE/HLE.h"
 #include "Core/HLE/ErrorCodes.h"
 #include "Core/HLE/FunctionWrappers.h"
@@ -50,6 +51,7 @@
 #include "Core/HLE/sceCtrl.h"
 #include "Core/HLE/sceIdStorage.h"
 #include "Core/HLE/sceImpose.h"
+#include "Core/HLE/sceKernel.h"
 #include "Core/HLE/sceIo.h"
 #include "Core/HLE/sceKernelModule.h"
 #include "Core/HLE/sceVshBridge.h"
@@ -105,6 +107,22 @@ static u32 vshIoIoctl(u32 id, u32 cmd, u32 indataPtr, u32 inlen, u32 outdataPtr,
 // and passes it to sceKernelStartModule, which then fails with UNKNOWN_MODULE far from the cause.
 static u32 vshKernelLoadModuleVSH(const char *name, u32 flags, u32 optionAddr) {
 	return hleCall(ModuleMgrForKernel, u32, sceKernelLoadModule, name, flags, optionAddr);
+}
+
+// How the XMB starts a game: vshmain tears down its plugins, then calls one of these with the path
+// and an SceKernelLoadExecVSHParam (PSPSDK psploadexec_kernel.h) - size, args, argp, key, then
+// VSH-only fields. The first four are exactly SceKernelLoadExecParam, so loadexec takes it as is.
+// Ms1/Ms2/Ms3 are the memory stick variants (updater / game / app); which one the XMB picks comes
+// from the title's PARAM.SFO.
+static int vshKernelLoadExecVSH(const char *filename, u32 paramPtr) {
+	if (!filename)
+		return hleLogError(Log::Loader, SCE_KERNEL_ERROR_ILLEGAL_ADDR, "bad filename");
+	auto param = PSPPointer<SceKernelLoadExecParam>::Create(paramPtr);
+	if (param.IsValid()) {
+		const char *key = param->keyp ? Memory::GetCharPointer(param->keyp) : nullptr;
+		INFO_LOG(Log::Loader, "VSH loadexec %s: args=%d key=%s", filename, (int)param->args, key ? key : "(none)");
+	}
+	return hleCall(LoadExecForUser, int, sceKernelLoadExec, filename, paramPtr);
 }
 
 static int vshChkregGetPsCode(u32 psCodePtr) {
@@ -206,10 +224,10 @@ const HLEFunction sceVshBridge[] = {
 	{0X59E6C2E1, &WrapI_V<VshBridgeUnimpl>,            "vshKernelLoadExecBufferVSHUsbWlanDebug", 'i', "",       HLE_KERNEL_SYSCALL},
 	{0XC5B25CA7, &WrapI_V<VshBridgeUnimpl>,            "vshKernelLoadExecVSHDiscDebug",          'i', "",       HLE_KERNEL_SYSCALL},
 	{0X0DCD4377, &WrapI_V<VshBridgeUnimpl>,            "vshKernelLoadExecVSHDiscUpdater",        'i', "",       HLE_KERNEL_SYSCALL},
-	{0X81682A40, &WrapI_V<VshBridgeUnimpl>,            "vshKernelLoadExecVSHDisk",               'i', "",       HLE_KERNEL_SYSCALL},
-	{0X9D3856CB, &WrapI_V<VshBridgeUnimpl>,            "vshKernelLoadExecVSHMs1",                'i', "",       HLE_KERNEL_SYSCALL},
-	{0XD6862A9E, &WrapI_V<VshBridgeUnimpl>,            "vshKernelLoadExecVSHMs2",                'i', "",       HLE_KERNEL_SYSCALL},
-	{0X21D4D038, &WrapI_V<VshBridgeUnimpl>,            "vshKernelLoadExecVSHMs3",                'i', "",       HLE_KERNEL_SYSCALL},
+	{0X81682A40, &WrapI_CU<vshKernelLoadExecVSH>,      "vshKernelLoadExecVSHDisk",               'i', "sx",     HLE_KERNEL_SYSCALL},
+	{0X9D3856CB, &WrapI_CU<vshKernelLoadExecVSH>,      "vshKernelLoadExecVSHMs1",                'i', "sx",     HLE_KERNEL_SYSCALL},
+	{0XD6862A9E, &WrapI_CU<vshKernelLoadExecVSH>,      "vshKernelLoadExecVSHMs2",                'i', "sx",     HLE_KERNEL_SYSCALL},
+	{0X21D4D038, &WrapI_CU<vshKernelLoadExecVSH>,      "vshKernelLoadExecVSHMs3",                'i', "sx",     HLE_KERNEL_SYSCALL},
 	{0XC9626587, &WrapI_V<VshBridgeUnimpl>,            "vshKernelLoadModuleBufferVSH",           'i', "",       HLE_KERNEL_SYSCALL},
 	{0X24BC5B26, &WrapU_CUU<vshKernelLoadModuleVSH>,   "vshKernelLoadModuleVSH",                 'x', "sxx",    HLE_KERNEL_SYSCALL},
 	{0XA5628F0D, &WrapU_CUU<vshKernelLoadModuleVSH>,   "vshKernelLoadModuleVSH",                 'x', "sxx",    HLE_KERNEL_SYSCALL},

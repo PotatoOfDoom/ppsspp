@@ -16,12 +16,10 @@ Once the opening animation ends it draws **the XrossMediaBar itself** — the ca
 Game, Network, PlayStation Network), the item under the selected category, the clock and the battery
 — out of the dump's own resources and fonts.
 
-Input works too: buttons injected over the WebSocket debugger move the bar between categories and
-redraw it. What does not work is **starting anything** — choosing an item animates the bar away
-and back, and nothing is launched — and the media categories stay empty, because the XMB never
-enumerates the memory stick or anything else. Both come down to the same thing: the per-category
-plugins are never loaded. See [What's still missing](#whats-still-missing), and in particular
-"Input works; starting anything does not" and "The XMB never looks at the memory stick" below.
+Input works (confirm is **cross**), the Game column lists the memory stick, and choosing a title
+runs the XMB's own game-start sequence through to loadexec, so a game launched from the XMB comes
+up and runs. Several items still stop at things PPSSPP does not answer yet - see
+[What's still missing](#whats-still-missing).
 
 To see the frame without a display, pause the emulator over the WebSocket debugger and read the
 framebuffer straight out of VRAM — it is at `0x04000000`/`0x04088000`, 480x272, stride 512, pixel
@@ -310,43 +308,45 @@ never deals in 8.3 short names — but the old answer was `SCE_KERNEL_ERROR_UNSU
 settings push is the kind of thing that bit us with the impose params. It is answered now, and a
 boot has no unanswered devctls left. It changed nothing visible.
 
-**The XMB never looks at the memory stick, or at anything else.** Putting homebrew in
-`memstick/PSP/GAME` does not make it appear in the Game column — and the reason is worth knowing,
-because it explains more than the memory stick. Over a whole boot the VSH calls `sceIoDopen`
-**zero** times. It never lists a directory, anywhere. All it does with the memory stick is three
-devctls: register a callback, set the code page, ask the capacity. It never enumerates it.
+**Confirm is cross, and an earlier version of this document had it backwards.** The registry's
+`/CONFIG/SYSTEM/XMB/button_assign` reads 1, and that is `PSP_SYSTEMPARAM_BUTTON_CROSS` (see
+`Core/HLE/sceUtility.h`), not circle; the dump's language is English, not Japanese. Every "choosing
+an item does nothing" result that used to be written up here was measured by pressing **circle**,
+which on a top-level item runs no item handler at all - pausing breakpoints on all 510 function
+symbols in `vshmain` stay silent for 25 seconds after the press, while the same breakpoints fire on
+cross. So the conclusions built on that - the content layer never starts, the item-to-plugin table
+is never read, the VSH never lists a directory - were all artefacts of the wrong button. With cross:
 
-That ties three separate-looking symptoms together:
+- **Game > Memory Stick** loads `game_plugin.prx`, which calls `sceIoDopen("ms0:/PSP/GAME")`, reads
+  every title's `EBOOT.PBP` (`PARAM.SFO`, `ICON0`, `PIC1`, and looks for `PBOOT.PBP`) and lists it,
+  icon and background image included.
+- **Saved Data Utility** loads `savedata_plugin.prx` (`sceVshSDPlugin_Module`), which then fails on
+  a device PPSSPP doesn't have - see below.
 
-- homebrew on the memory stick doesn't show up
-- the media categories are empty
-- choosing an item does nothing
+Note that headless and the desktop build use different memory sticks: headless mounts `ms0:` from
+`memstick/` next to its own executable (`Windows/x64/Debug/memstick` for a Debug build), not the
+one in the repo root.
 
-The XMB is drawing its shell — the bar, the clock, the battery, and the fixed entries like "Saved
-Data Utility", which is built in rather than scanned for — but the layer that fills categories with
-content never starts. That layer is the per-category plugins: `game_plugin.prx`, `video_plugin.prx`,
-`music_main_plugin.prx`, `photo_main_plugin.prx`. Only `opening_plugin.prx`, `impose_plugin.prx` and
-`mpeg_vsh.prx` are ever loaded, and the loading mechanism demonstrably works, so the question is not
-how to load them but what makes the VSH ask.
+How an item gets started, measured with breakpoints from the press onwards:
 
-Breaking on the `vshKernelLoadModuleVSH` import stub and reading the caller each time says where to
-look. `mpeg_vsh.prx` is a one-off, loaded straight from `vshmain` (`ra = 0x0881005c`). The two
-plugins both come through a single generic routine in `paf.prx` (`ra = 0x0889ef6c` for both), which
-does the same three things each time: create an object, hand it the path with a type argument of 3,
-and store it in a slot. The bridge call itself is indirect, through a function pointer in paf's own
-dispatch table at `0x089ED428`, so this is a method on a plugin object rather than anything specific
-to those two modules — `game_plugin.prx` would take exactly the same route.
+```
+0881a9b4  RCO handler "V" (confirm)
+0881aa70  launch request (appId, arg) -> topmenu+0x120/+0x124
+0881af5c  start the exit animation; paf callbacks 0881b39c (x~10) and 0881b450
+0881b4d4  -> 0881fe5c(6) posts paf job 6, which runs 0881fad4 on the ScePafJob thread
+0881d760  look up the plugin for appId and load it (088137c4 builds flash0:/vsh/module/<x>.prx)
+0881b724  start the app; paf "create plugin" (NID 0xa989a2c4)
+```
 
-**The table that says which plugin belongs to which item is in `vshmain`.** It sits at
-`0x08853f84` on a 6.61 dump, 70 records of 0x28 bytes each, and the layout is unambiguous: a
-32-byte zero-padded module name, then a `u32` column and a `u32` item id.
+**The table that says which plugin belongs to which item is in `vshmain`**, and that lookup is
+where it is read. It is indexed as `0x08853f34 + 0x28 * appId` on a 6.61 dump - the first named
+record, at `0x08853f84`, is appId 2 - 70 records of a 32-byte zero-padded module name, then a `u32`
+column and a `u32` item id:
 
 ```
 0885418c  67 61 6d 65 5f 70 6c 75 67 69 6e 00 ...   game_plugin
       +20  05 00 00 00  1c 00 00 00                 column 5, id 0x1c
 ```
-
-Grouped by column it is recognisably the XMB:
 
 | column | plugins |
 | --- | --- |
@@ -359,45 +359,22 @@ Grouped by column it is recognisably the XMB:
 | 6 | `htmlviewer_plugin`, `lftv_plugin`, `psn_plugin`, `skype_plugin`, `radioshack_plugin`, ... |
 | 7 | `psn_plugin` |
 
-So the data that would drive loading `game_plugin.prx` is right there and complete. What is still
-missing is the code that walks it. It is not addressed by a `lui`/`addiu` pair anywhere in `.text`,
-and there is no `R_MIPS_32` pointer to it anywhere in the module image, so it is reached some other
-way. Scanning for indexed access (`lui` + a load whose offset supplies the low half) drowns in false
-positives: a naive scan reports ~100 reads of `0x08854000`, which is inside the zero padding of
-record 3's name and therefore cannot be real - the register tracking just needs to be better than
-this to be worth anything.
+A memory read breakpoint over it logs 57 reads on cross over Saved Data Utility (record
+`0x088540ec`, `savedata_plugin`). Game > Memory Stick (appId 0xf) is a special case that takes the
+name from a list of its own instead.
 
-**Nothing ever reads that table.** A memory read breakpoint over all 70 records
-(`memory.breakpoint.add` with `read`, `log`, and `enabled: false` so the run continues) does not
-trip once - not while booting, not while moving between categories, and not on confirm. The obvious
-objection is that the table might only be consulted when an item is actually chosen, so that case
-was checked with the framebuffer captured at each step to prove the input landed: the bar visibly
-moves from Game to Network, "Internet Browser" is selected - an entry this very table maps to
-`htmlviewer_plugin` - and confirm is pressed. The read count does not move. The apparatus was validated in the same run rather than trusted: a second breakpoint on the
-alarm count array at `0x088595C0`, which is known to be read at startup, fired four times and named
-`PC=0883f0ac`, which is exactly the `lw` that reads it. So the negative is real, and the whole
-subsystem that would consult the item-to-plugin map is dormant rather than merely failing partway.
+**The boot path itself was never the problem either**, which is worth keeping because it took a
+while to establish. The opening hands over exactly as designed: `opening_plugin` calls `vshmain`'s
+`0x08808f68(1)`, which creates the resource-only `topmenu_plugin` and posts it a start request that
+it consumes on the job thread. The status word at `0x0885ACD0` is a set of one-shot "plugin X has
+been requested" latches - `0x4` opening, `0x8` system_plugin, `0x10` topmenu, `0x40` impose, `0x100`
+system_plugin's start call - written exactly six times per boot and ending at `0x15c`, which is the
+right value for a no-disc, not-first-boot start. The bits never set (`0x1`/`0x2` UMD autoboot, `0x20`
+first-boot `sysconf_plugin`, `0x80` `auth_plugin`) belong to paths a normal boot must not take. At
+the idle XMB the `SCE_VSH_GRAPHICS` thread runs a plain paf frame loop with no phase variable, and
+the other two VSH threads wait on their own event flags.
 
-Worth knowing if you repeat this: a hit is logged to `Log::MemMap` at NOTICE level in the form
-`CHK Read32(interpret) at <addr> (...), PC=<pc> (...)`, so grep for `CHK `. Searching for
-"memcheck" or "breakpoint" finds nothing and looks like a clean negative when it isn't.
-
-So the gate is above that routine, in whatever decides to create a plugin object at all. Getting
-there is **`hle.backtrace`** — the debugger does have a stack walk, which an earlier round of this
-missed, wasting a detour through reading saved return addresses off the stack by eye (that gave a
-plausible but wrong answer: the address picked as the caller belonged to an unrelated call). It
-needs `cpu.stepping` first and returns a frame list with each function's entry address.
-
-Walked properly, loading a plugin looks like this:
-
-```
-#0  08896724   set the plugin up from a descriptor, create the object, load the module
-#1  08895310   allocate a 0x1D8-byte object, pass the job's parameter, store the result
-#2  089303b0   the ScePafJob worker thread
-```
-
-So it runs as a paf **job**, one per plugin, and `#1`'s argument is a descriptor. Caught live, a
-descriptor is a run of (pointer, length) pairs and decodes cleanly:
+Plugins load as a paf job, one per plugin, from a descriptor built on the heap:
 
 | offset | contents |
 | --- | --- |
@@ -408,57 +385,46 @@ descriptor is a run of (pointer, length) pairs and decodes cleanly:
 | `+0x54` | 37 — the length of that path |
 | `+0x60` | 3 — the type |
 
-The gate turns out to be mundane: the branch deciding whether to load anything is
-`if (desc->0x54 != 0)`, i.e. *does this entry name a module at all*. Entries without a `.prx` are
-skipped by design, not by failure.
+Entries without a `.prx` (`+0x54 == 0`, e.g. `topmenu_plugin`) are skipped by the loader by design.
+The tool that got all of this right where reading the stack by eye did not is **`hle.backtrace`** -
+it needs `cpu.stepping` first and returns each frame's function entry.
 
-The useful part is where those strings live: `09c0xxxx`, the **heap**. Descriptors are built at
-runtime, not read out of the static table above — which independently explains why a read
-breakpoint on that table never fires. It is not the live source at this stage. So the question moves
-one level further out again: what builds a descriptor and posts the job. Only two are ever posted,
-`opening_plugin` and `impose_plugin`, and both are plugins the XMB needs regardless of any menu — so
-whatever would post the category ones is still the thing that never runs.
+**Starting a game works, and the XMB checks signatures the way a real one does.** Choosing a title
+makes `vshmain` read the first 512 bytes of the PBP's `DATA.PSP` (`0x08816650`) and accept only
+`~PSP` or `~SCE` at `0x08816664`; anything else is "This game cannot be started. The data is
+corrupted." That includes every **unsigned** homebrew, whose `DATA.PSP` is a plain ELF - which is
+exactly what official firmware does, since only custom firmware runs unsigned code. Past the check,
+the VSH region-checks (`sceChkregCheckRegion`), reads the version (`sceResmgr`) and the parental
+level, plays the game boot animation, tears down its plugins and callbacks, and calls
+`vshKernelLoadExecVSHMs3(path, param)` with key `"game"` for a homebrew title.
 
-Chasing that one level further, the descriptor is built on the `SCE_VSH_GRAPHICS` thread, and the
-backtrace lands back in `vshmain`:
+That call is now wired to PPSSPP's loadexec (`vshKernelLoadExecVSH` in `Core/HLE/sceVshBridge.cpp`,
+for `Ms1`/`Ms2`/`Ms3`/`Disk`): the param block starts with the same size/args/argp/key as
+`SceKernelLoadExecParam`, so it is passed straight through. Measured end to end on FlappyPSP, with
+the signature check satisfied by writing `~PSP` into `vshmain`'s header buffer over the debugger (the
+file itself stays a plain ELF, which PPSSPP's loader takes): the XMB runs its whole game-start
+sequence and the game comes up and runs. `__KernelLoadExec` now only loads the VSH's shared
+libraries (`paf`, `common_gui`, `common_util`) when the module being executed is `vsh_module`, since
+the boot type stays `PSP_VSH` after the VSH has launched something.
 
-```
-#0-#2  paf        fill the descriptor
-#3  088089f4  vshmain   make a plugin
-#4  0880a2ac  vshmain
-#5  08818bfc  vshmain
-#6  08818d14  vshmain   the SCE_VSH_GRAPHICS thread entry
-```
+Not done yet: a signed (`~PSP`) homebrew or PSN title has not been tried; the launched game keeps
+the VSH's `PSPVSH000` disc ID rather than its own `PARAM.SFO`; and `sceKernelExitGame` ends emulation
+instead of returning to the XMB, as it would on a PSP.
 
-`0x088089f4` opens with two gates on globals in `vshmain`'s data - it returns immediately if
-`*(0x0885AC80) == 1`, or if `*(0x0885ACD0) & 4` is set. Read live with the XMB up, those are `0` and
-`0x15c`, so bit 2 *is* set, and the second gate would turn every call away. A write breakpoint shows
-exactly where it gets set: right after `opening_plugin` is created, from `0x088092c0` reached via
-`jal 0x0880AE58`, after which `opening_plugin` itself ORs more bits in (`0x4` to `0xc` to `0x10c`).
+**Saved Data Utility needs `msstor0p1:`.** `savedata_plugin` calls `sceIoOpen("msstor0p1:/", 1, 0)`,
+the raw memory stick partition. PPSSPP has no such device and answers `NODEV`, and the plugin gives
+up, leaving the XMB stuck in that item. The helpers around that call then send `sceIoIoctl`
+`0x02125009`/`0x02125008` on the fd and `sceIoDevctl` `0x02125802` on the path, and accept `0x11` or
+`0x41` from the devctl. The plugin also references `msstor0:`, `msstoremu0:` and `mscmhcemu0:`.
 
-**That is not the explanation, though.** Driving the breakpoint through a whole boot, `0x088089f4`
-is called exactly **once** - for `opening_plugin`, while the flag is still `0` - and never again.
-The gate is never re-evaluated, so it blocks nothing.
+Smaller things found on the way:
 
-That has now happened at every level: the static table, the loader routine, the descriptor builder,
-the gate flag. None of them is refusing. Each is simply not reached a second time. Looking for the
-condition that says no is the wrong model - there is no "no". The menu-construction path is never
-entered at all, and the thing to find is what should enter it, somewhere in how the opening sequence
-is supposed to hand over.
-
-**Input works; starting anything does not.** Injecting buttons over the WebSocket debugger
-(`input.buttons.press`) moves the bar between categories and redraws the column, icons and text and
-all. Note the confirm button is **circle**, not cross — PPSSPP's registry dump came off a
-Japanese-configured PSP, and `/CONFIG/SYSTEM/XMB/button_assign` reads 1.
-
-Choosing an item is a different story. Both "Internet Browser" and "Saved Data Utility" do the same
-thing: the bar animates away, and then it comes back, with nothing having happened. That is not a
-crash and not a missing library — over a 1.1-million-line boot-and-press log there is no bad access,
-no assert, no unresolved import called, and no mention of `htmlviewer_plugin.prx` at all. The
-`vshKernelLoadExecVSH*` entry points are imported but never called, and pressing the button produces
-*no HLE activity whatsoever* beyond the once-a-second clock and battery polls. So the VSH decides
-against launching entirely on its own, without asking PPSSPP anything, and finding out why means
-reverse engineering `vshmain`'s menu dispatcher rather than watching what it calls.
+- `sceAudioChReserve(-1)` never hands out channel 0 (`GetFreeChannel` in `Core/HLE/sceAudio.cpp`
+  loops `i > 0`). paf holds channels 7-4, the opening's sound thread gets 3-1, fails on its fourth
+  and exits, so the opening has no sound. Whether hardware hands out channel 0 here is not settled
+  by pspautotests, so this is left alone for now.
+- `game_plugin` imports `sceVshBridge` NIDs `0xb0967ff9` and `0xcf824d41`, which PPSSPP doesn't
+  know. Neither has been seen being called.
 
 One suspect has been ruled out, which is worth writing down so nobody re-runs it.
 `sceVshBridge_D3A07961` is by far the most-called stub - about twice a frame, ~8,000 times in a
